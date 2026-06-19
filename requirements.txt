@@ -1,0 +1,18 @@
+# Web framework
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# ORM + validation
+SQLAlchemy>=2.0
+pydantic>=2.7
+
+# Config / secrets
+python-dotenv>=1.0
+cryptography>=42.0          # Fernet field encryption (encryption at rest)
+
+# LLM ingestion engine (PUBLIC data only — see §2 firewall)
+anthropic>=0.40
+
+# Web fetch + clean-text extraction
+httpx>=0.27
+trafilatura>=1.9

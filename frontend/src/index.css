@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink-900 text-slate-200 font-sans antialiased;
+  background-image:
+    radial-gradient(900px 500px at 12% -5%, rgba(34, 211, 238, 0.08), transparent 60%),
+    radial-gradient(800px 500px at 95% 0%, rgba(244, 114, 182, 0.07), transparent 55%);
+  background-attachment: fixed;
+}
+
+/* Thin, dense scrollbars to match the aesthetic */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3447;
+  border-radius: 9px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4760;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-ink-400/60 bg-ink-700/70 backdrop-blur-sm;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium
+           transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-cyan-accent/15 text-cyan-accent border border-cyan-accent/40
+           hover:bg-cyan-accent/25;
+  }
+  .btn-ghost {
+    @apply btn text-slate-300 border border-ink-400/60 hover:bg-ink-600;
+  }
+  .btn-danger {
+    @apply btn text-pink-accent border border-pink-accent/40 hover:bg-pink-accent/15;
+  }
+  .btn-success {
+    @apply btn bg-emerald-500/15 text-emerald-300 border border-emerald-500/40
+           hover:bg-emerald-500/25;
+  }
+  .input {
+    @apply min-w-0 w-full rounded-lg border border-ink-400/70 bg-ink-800 px-3 py-1.5 text-sm
+           text-slate-100 placeholder-slate-500 outline-none
+           focus:border-cyan-accent/60 focus:ring-1 focus:ring-cyan-accent/40;
+  }
+  .label {
+    @apply block text-[11px] font-medium uppercase tracking-wide text-slate-400 mb-1;
+  }
+  .th {
+    @apply px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide
+           text-slate-400 border-b border-ink-400/60 select-none;
+  }
+  .td {
+    @apply px-3 py-2 text-sm border-b border-ink-500/40 align-middle;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold;
+  }
+}
