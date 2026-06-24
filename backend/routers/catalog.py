@@ -11,6 +11,9 @@ from .. import config, models, schemas
 from ..crypto import MissingKeyError
 from ..db import get_db
 from ..logic import catalog as catalog_logic
+from ..logic import catalog_cleanup
+from ..logic.catalog_health import build_catalog_health
+from ..logic.decision_context import DecisionContext
 from ..product_identity import derive_product_family
 
 router = APIRouter(prefix="/api", tags=["catalog"])
@@ -29,14 +32,25 @@ def scored_catalog(user: str, db: Session = Depends(get_db)):
     return catalog_logic.scored_catalog(db, user)
 
 
+@router.get("/catalog-health")
+def catalog_health(db: Session = Depends(get_db)):
+    return build_catalog_health(db, context=DecisionContext.load(db))
+
+
+@router.get("/catalog/duplicates")
+def catalog_duplicates(db: Session = Depends(get_db)):
+    return {"groups": catalog_cleanup.duplicate_product_groups(db)}
+
+
+@router.post("/catalog/duplicates/merge")
+def merge_catalog_duplicates(db: Session = Depends(get_db)):
+    return catalog_cleanup.merge_duplicate_products(db)
+
+
 @router.post("/catalog")
 def create_product(payload: schemas.CardProductCreate, db: Session = Depends(get_db)):
     data = payload.model_dump()
-    data["product_family"] = data.get("product_family") or derive_product_family(
-        data.get("issuer"), data.get("product_name")
-    )
-    product = models.CardProduct(**data)
-    db.add(product)
+    product, _created = catalog_logic.upsert_product_by_identity(db, data)
     db.commit()
     db.refresh(product)
     return catalog_logic.product_to_dict(product)

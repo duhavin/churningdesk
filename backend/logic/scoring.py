@@ -31,6 +31,7 @@ class Score:
     needs_data: bool = False
     value_known: bool = True
     peak_is_targeted: bool = False
+    is_exceptional: bool = False
 
 
 def _cpp(valuations: dict[str, float], currency: str | None) -> float:
@@ -58,6 +59,7 @@ def compute_score(
     peak = public_peak or targeted_peak
     peak_is_targeted = peak > 0 and public_peak == 0
     peak_score = round(min(effective_points / peak, 1.0) * 100) if peak > 0 else 0
+    is_exceptional = _is_exceptional_offer(effective_points, peak, peak_score)
 
     has_bonus_offer = bool(effective_points or (product.current_offer_cash or 0))
 
@@ -102,6 +104,17 @@ def compute_score(
         needs_data=needs_data,
         value_known=value_known,
         peak_is_targeted=peak_is_targeted,
+        is_exceptional=is_exceptional,
+    )
+
+
+def _is_exceptional_offer(effective_points: int, peak: int, peak_score: int) -> bool:
+    if effective_points >= config.EXCEPTIONAL_PEAK_POINTS:
+        return True
+    return bool(
+        peak >= config.EXCEPTIONAL_PEAK_POINTS
+        and effective_points > 0
+        and peak_score >= config.APPLY_NOW_THRESHOLD
     )
 
 

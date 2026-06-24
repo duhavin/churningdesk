@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 from typing import Literal
 
@@ -82,7 +83,7 @@ def discover_cards(issuers: list[str]) -> list[DiscoveredCard]:
     try:
         resp = client.messages.parse(
             model=config.ANTHROPIC_MODEL,
-            max_tokens=8000,
+            max_tokens=4000,
             messages=[{"role": "user", "content": prompt}],
             output_format=DiscoveryResult,
         )
@@ -113,7 +114,7 @@ def research_card_universe(issuers: list[str], max_uses: int | None = None) -> d
         f"Scope: {issuer_scope}"
     )
     uses = max_uses if max_uses is not None else int(os.getenv("WEB_SEARCH_DISCOVERY_MAX_USES", "8"))
-    return _run_web_research(system, prompt, uses, max_tokens=int(os.getenv("ANTHROPIC_DISCOVERY_RESEARCH_MAX_TOKENS", "5000")))
+    return _run_web_research(system, prompt, uses, max_tokens=int(os.getenv("ANTHROPIC_DISCOVERY_RESEARCH_MAX_TOKENS", "4000")))
 
 
 def discover_cards_from_research(
@@ -181,7 +182,7 @@ def discover_cards_from_research(
     try:
         message = client.messages.create(
             model=config.ANTHROPIC_MODEL,
-            max_tokens=int(os.getenv("ANTHROPIC_DISCOVERY_MAX_TOKENS", "5000")),
+            max_tokens=int(os.getenv("ANTHROPIC_DISCOVERY_MAX_TOKENS", "4000")),
             temperature=0,
             tools=[tool],
             tool_choice={"type": "tool", "name": tool["name"]},
@@ -217,6 +218,30 @@ class EarnMultiplier(BaseModel):
     multiplier: float
 
 
+class StructuredBenefit(BaseModel):
+    """Clean public benefit shape stored in CardProduct.card_benefits."""
+
+    name: str = Field(description="Short user-facing benefit name, e.g. '$300 travel credit'")
+    value: str | None = Field(default=None, description="Benefit amount/value, e.g. '$300' or '10,000 miles'")
+    frequency: Literal[
+        "monthly",
+        "quarterly",
+        "semiannual",
+        "annual",
+        "anniversary",
+        "one_time",
+        "ongoing",
+        "unknown",
+    ] = "unknown"
+    category: str | None = Field(default=None, description="travel, dining, groceries, gas, lounge, hotel, airline, etc.")
+    description: str | None = Field(default=None, description="One concise supporting detail, not raw page text")
+    evidence: str | None = Field(default=None, description="Short exact snippet supporting this benefit")
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+BenefitValue = StructuredBenefit | dict[str, Any] | str
+
+
 OfferStatus = Literal["public", "targeted", "affiliate", "expired", "unknown", "needs_review"]
 
 
@@ -244,7 +269,7 @@ class OfferScanRow(BaseModel):
     first_year_credit_value: float | None = None
     earn_multipliers: dict[str, float] | None = None
     best_category_uses: dict[str, str] | None = None
-    card_benefits: list[str] | None = None
+    card_benefits: list[BenefitValue] | None = None
     downgrade_paths: list[str] | None = None
     eligibility_tags: list[str] | None = None
     reports_to_personal_credit: bool | None = None
@@ -307,7 +332,7 @@ class OfferExtraction(BaseModel):
         default=None,
         description="{category: short note} for travel/dining/groceries/gas/everyday earn strengths",
     )
-    card_benefits: list[str] | None = Field(
+    card_benefits: list[BenefitValue] | None = Field(
         default=None, description="List of notable perks/credits this card carries"
     )
     downgrade_paths: list[str] | None = Field(
@@ -334,8 +359,288 @@ class OfferExtraction(BaseModel):
     content_hash: str | None = None
 
 
-class OfferExtractionBatchResult(BaseModel):
-    offers: list[OfferExtraction]
+_CATEGORY_CANONICAL = {
+    "restaurant": "dining",
+    "restaurants": "dining",
+    "dining": "dining",
+    "grocery": "groceries",
+    "groceries": "groceries",
+    "supermarket": "groceries",
+    "supermarkets": "groceries",
+    "travel": "travel",
+    "airfare": "travel",
+    "flight": "travel",
+    "flights": "travel",
+    "hotel": "travel",
+    "hotels": "travel",
+    "gas": "gas",
+    "fuel": "gas",
+    "everyday": "everyday",
+    "every purchase": "everyday",
+    "all purchases": "everyday",
+    "other": "everyday",
+}
+
+_BENEFIT_NOISE = (
+    "[json-ld]",
+    "@context",
+    "schema.org",
+    "aggregaterating",
+    "breadcrumblist",
+    "feesandcommissionsspecification",
+    "pay over time",
+    "payment plan",
+    "at checkout",
+    "credit card members may have the option",
+    "orders totaling",
+    "break up credit card purchases",
+    "start a plan",
+    "pricing and terms",
+    "to learn more",
+    "please visit",
+)
+
+
+def _clean_public_text(value: Any, limit: int = 180) -> str | None:
+    text = str(value or "")
+    text = re.sub(r"\[(?:text|title|meta|json-ld|next-data|table)\]\s*", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" -|")
+    if not text:
+        return None
+    if len(text) > limit:
+        text = text[: limit - 3].rstrip() + "..."
+    return text
+
+
+def _benefit_frequency(text: str | None) -> str:
+    low = (text or "").lower()
+    if "anniversary" in low or "cardmember year" in low:
+        return "anniversary"
+    if "semiannual" in low or "semi-annual" in low or "january through june" in low or "july through december" in low:
+        return "semiannual"
+    if "monthly" in low or "each month" in low or "per month" in low:
+        return "monthly"
+    if "quarterly" in low or "each quarter" in low:
+        return "quarterly"
+    if "annual" in low or "each year" in low or "per year" in low:
+        return "annual"
+    if "one-time" in low or "once" in low:
+        return "one_time"
+    if "lounge" in low or "status" in low or "membership" in low or "protection" in low:
+        return "ongoing"
+    return "unknown"
+
+
+def _benefit_category(text: str | None) -> str | None:
+    low = (text or "").lower()
+    for category, terms in {
+        "travel": ("travel", "global entry", "tsa precheck", "clear", "rental car", "trip", "lounge"),
+        "dining": ("dining", "restaurant", "resy", "uber", "dunkin"),
+        "hotel": ("hotel", "free night", "resort"),
+        "airline": ("airline", "flight", "checked bag", "priority boarding"),
+        "shopping": ("purchase protection", "cell phone", "walmart", "saks", "instacart"),
+        "anniversary": ("anniversary",),
+    }.items():
+        if any(term in low for term in terms):
+            return category
+    return None
+
+
+def _benefit_value(text: str | None) -> str | None:
+    if not text:
+        return None
+    cash = re.search(r"\$[\d,]+(?:\.\d+)?", text)
+    if cash:
+        return cash.group(0)
+    points = re.search(r"\b(\d{1,3}(?:,\d{3})+|\d{4,6})\s+(points?|miles?|skymiles|avios)\b", text, re.I)
+    if points:
+        return f"{points.group(1)} {points.group(2)}"
+    return None
+
+
+def _short_benefit_name(text: str, value: str | None, frequency: str, category: str | None) -> str:
+    low = text.lower()
+    if "global entry" in low or "tsa precheck" in low:
+        return "Global Entry/TSA PreCheck credit"
+    if "priority pass" in low:
+        return "Priority Pass lounge access"
+    if "capital one lounge" in low:
+        return "Capital One lounge access"
+    if "lounge" in low:
+        return "airport lounge access"
+    if "uber" in low:
+        return "Uber Cash"
+    if "resy" in low:
+        return "Resy credit"
+    if "dunkin" in low:
+        return "Dunkin credit"
+    if "travel" in low and "credit" in low:
+        return f"{value or ''} travel credit".strip()
+    if "hotel" in low and "credit" in low:
+        return f"{value or ''} hotel credit".strip()
+    if "dining" in low and "credit" in low:
+        return f"{value or ''} dining credit".strip()
+    if "anniversary" in low and value:
+        return f"{value} anniversary bonus"
+    if "anniversary" in low:
+        return "anniversary bonus"
+    text = re.split(r"[.;|]", text, maxsplit=1)[0]
+    text = re.sub(r"\b(up to|statement|benefit|enrollment required|terms apply)\b", " ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" -|.")
+    if value and "credit" in low and value not in text:
+        text = f"{value} {text}".strip()
+    if len(text) > 56:
+        text = text[:53].rstrip() + "..."
+    if not text and category:
+        text = f"{frequency if frequency != 'unknown' else ''} {category} benefit".strip()
+    return text or "card benefit"
+
+
+def _normalize_benefit_item(item: BenefitValue) -> dict[str, Any] | None:
+    if isinstance(item, StructuredBenefit):
+        item = item.model_dump(mode="json", exclude_none=True)
+    if isinstance(item, dict):
+        raw_text = " ".join(
+            str(item.get(key) or "")
+            for key in ("name", "benefit", "title", "description", "notes", "detail", "value", "evidence")
+        )
+        clean_text = _clean_public_text(raw_text, 500)
+        if not clean_text or any(token in clean_text.lower() for token in _BENEFIT_NOISE):
+            return None
+        raw_name = _clean_public_text(
+            item.get("name") or item.get("benefit") or item.get("title") or clean_text,
+            80,
+        )
+        raw_value = _clean_public_text(item.get("value") or item.get("annual_value") or item.get("amount"), 60)
+        frequency = str(item.get("frequency") or item.get("cadence") or _benefit_frequency(clean_text)).strip().lower()
+        if frequency not in {"monthly", "quarterly", "semiannual", "annual", "anniversary", "one_time", "ongoing", "unknown"}:
+            frequency = _benefit_frequency(clean_text)
+        category = _clean_public_text(item.get("category") or item.get("type") or _benefit_category(clean_text), 40)
+        evidence = _clean_public_text(item.get("evidence") or item.get("source_snippet") or clean_text, 220)
+        name_seed = " ".join(part for part in (raw_name, clean_text) if part)
+        name = _short_benefit_name(name_seed or clean_text, raw_value or _benefit_value(clean_text), frequency, category)
+        out: dict[str, Any] = {
+            "name": name,
+            "value": raw_value or _benefit_value(clean_text),
+            "frequency": frequency,
+            "category": category,
+            "description": _clean_public_text(item.get("description") or item.get("notes") or item.get("detail"), 180),
+            "evidence": evidence,
+        }
+        confidence = item.get("confidence")
+        try:
+            if confidence is not None:
+                out["confidence"] = max(0.0, min(1.0, float(confidence)))
+        except (TypeError, ValueError):
+            pass
+    else:
+        clean_text = _clean_public_text(item, 500)
+        if not clean_text or any(token in clean_text.lower() for token in _BENEFIT_NOISE):
+            return None
+        value = _benefit_value(clean_text)
+        frequency = _benefit_frequency(clean_text)
+        category = _benefit_category(clean_text)
+        out = {
+            "name": _short_benefit_name(clean_text, value, frequency, category),
+            "value": value,
+            "frequency": frequency,
+            "category": category,
+            "description": clean_text if len(clean_text) <= 180 else None,
+            "evidence": clean_text[:220],
+        }
+    return {key: value for key, value in out.items() if value not in (None, "", [], {})}
+
+
+def _normalize_card_benefits(items: list[BenefitValue] | None) -> list[dict[str, Any]] | None:
+    if not items:
+        return None
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        benefit = _normalize_benefit_item(item)
+        if not benefit:
+            continue
+        key = re.sub(r"[^a-z0-9]+", " ", f"{benefit.get('name')} {benefit.get('value')} {benefit.get('frequency')}".lower()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(benefit)
+        if len(out) >= 12:
+            break
+    return out or None
+
+
+def _normalize_category_key(value: str | None) -> str | None:
+    low = " ".join(str(value or "").lower().split())
+    if not low:
+        return None
+    for term, category in _CATEGORY_CANONICAL.items():
+        if term in low:
+            return category
+    return re.sub(r"[^a-z0-9_]+", "_", low).strip("_")[:40] or None
+
+
+def _normalize_earn_multipliers(value: dict[str, float] | None) -> dict[str, float] | None:
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, float] = {}
+    for raw_category, raw_multiplier in value.items():
+        category = _normalize_category_key(raw_category)
+        if not category:
+            continue
+        try:
+            multiplier = float(raw_multiplier)
+        except (TypeError, ValueError):
+            continue
+        if multiplier <= 0 or multiplier > 25:
+            continue
+        out[category] = max(out.get(category, 0), multiplier)
+    return out or None
+
+
+def _normalize_best_category_uses(
+    value: dict[str, str] | None,
+    earn_multipliers: dict[str, float] | None,
+) -> dict[str, str] | None:
+    out: dict[str, str] = {}
+    for category, multiplier in (earn_multipliers or {}).items():
+        out[category] = f"{multiplier:g}x"
+    if isinstance(value, dict):
+        for raw_category, raw_note in value.items():
+            category = _normalize_category_key(raw_category)
+            note = _clean_public_text(raw_note, 80)
+            if not category or not note:
+                continue
+            note = re.sub(r"\b(\d+(?:\.\d+)?x)\s*[-–]\s*\1\b", r"\1", note, flags=re.I)
+            out[category] = note
+    return out or None
+
+
+def normalize_offer_scan_row(row: OfferScanRow) -> OfferScanRow:
+    """Clean LLM/static supplemental fields into a stable PUBLIC catalog shape."""
+    row.earn_multipliers = _normalize_earn_multipliers(row.earn_multipliers)
+    row.best_category_uses = _normalize_best_category_uses(row.best_category_uses, row.earn_multipliers)
+    row.card_benefits = _normalize_card_benefits(row.card_benefits)
+    if row.card_benefits:
+        evidence = []
+        for benefit in row.card_benefits:
+            snippet = benefit.get("evidence") if isinstance(benefit, dict) else None
+            if snippet:
+                evidence.append(str(snippet))
+        if evidence:
+            row.evidence_snippets["card_benefits"] = list(dict.fromkeys(evidence[:8]))
+    if row.earn_multipliers:
+        row.evidence_snippets.setdefault("earn_multipliers", row.evidence_snippets.get("best_category_uses", []))
+    return row
+
+
+def has_unstructured_supplemental(row: OfferScanRow | None) -> bool:
+    if row is None:
+        return False
+    benefits = row.card_benefits or []
+    has_unstructured_benefits = any(isinstance(item, str) for item in benefits)
+    has_use_without_multiplier = bool(row.best_category_uses) and not row.earn_multipliers
+    return has_unstructured_benefits or has_use_without_multiplier
 
 
 def extract_offers_batch(cards: list[OfferSnippetInput]) -> list[OfferScanRow]:
@@ -354,7 +659,7 @@ def extract_offers_batch(cards: list[OfferSnippetInput]) -> list[OfferScanRow]:
         "snippets. Do not browse, search the web, infer from memory, or use private "
         "targeted account pages.\n\n"
         "Return exactly one strict JSON row per input card using these fields: "
-        "issuer, card_name, product_url, source_url, fetched_at, content_hash, "
+        "issuer, card_name, product_url, source_url, "
         "bonus_amount, bonus_unit, spend_requirement, spend_window_months, "
         "peak_bonus_amount, peak_bonus_unit, peak_spend_requirement, peak_offer_date, "
         "referral_bonus_amount, referral_bonus_unit, first_year_credit_value, "
@@ -370,9 +675,18 @@ def extract_offers_batch(cards: list[OfferSnippetInput]) -> list[OfferScanRow]:
         "them null.\n"
         "- referral_bonus_amount/referral_bonus_unit describe the 'refer a friend' bonus the "
         "EXISTING cardholder earns for referring someone; leave null if not mentioned.\n"
-        "- earn_multipliers is an object like {\"dining\": 4, \"travel\": 3}; best_category_uses "
-        "is short user-facing category guidance.\n"
-        "- card_benefits lists notable public perks/credits; downgrade_paths lists product-change targets.\n"
+        "- earn_multipliers is a normalized object like {\"dining\": 4, \"travel\": 3}; use categories "
+        "dining, groceries, travel, gas, everyday when possible.\n"
+        "- best_category_uses is short user-facing category guidance, never duplicated text like '4x-4x'. "
+        "For plain earn rates, use compact values such as {\"dining\": \"4x\"}.\n"
+        "- card_benefits must be a clean array of objects, not raw page fragments. Each object should use "
+        "{name, value, frequency, category, description, evidence, confidence}. frequency must be one of "
+        "monthly, quarterly, semiannual, annual, anniversary, one_time, ongoing, unknown. Include ALL notable "
+        "public perks/credits/anniversary benefits, especially recurring monthly/semiannual/annual credits, "
+        "lounge access, free night/anniversary bonuses, Uber/Resy/dining/travel credits. Keep names short "
+        "for UI display, e.g. '$300 travel credit', 'Uber Cash', 'Priority Pass lounge access'. "
+        "Do not include JSON-LD/title/meta boilerplate, payment-plan text, article navigation, or generic terms text. "
+        "downgrade_paths lists product-change targets.\n"
         "- first_year_credit_value is the cited dollar value of first-year credits only; leave null if not cited.\n"
         "- offer_status must be one of public, targeted, affiliate, expired, unknown, needs_review.\n"
         "- source_priority: 1 official issuer page, 2 trusted secondary source, 3 other.\n"
@@ -385,14 +699,14 @@ def extract_offers_batch(cards: list[OfferSnippetInput]) -> list[OfferScanRow]:
     try:
         resp = client.messages.parse(
             model=config.ANTHROPIC_MODEL,
-            max_tokens=min(8000, 1600 + len(cards) * 1050),
+            max_tokens=min(4000, 600 + len(cards) * 450),
             messages=[{"role": "user", "content": prompt}],
             output_format=OfferScanBatchResult,
         )
     except anthropic.APIError as exc:
         raise _provider_unavailable(exc) from exc
     result = resp.parsed_output
-    return result.rows if result else []
+    return [normalize_offer_scan_row(row) for row in result.rows] if result else []
 
 
 def extract_offer(
@@ -412,8 +726,12 @@ def extract_offer(
         "- Do NOT treat targeted/invite-only/incognito/phone/'as high as' offers as the public "
         "offer; put those high-water marks in 'targeted_peak_offer_points' (with source/date).\n"
         "- 'referral_bonus_points'/'referral_bonus_cash' = what an existing cardholder earns to refer.\n"
-        "- 'best_category_uses' = {category: short note} for travel/dining/groceries/gas/everyday.\n"
-        "- 'card_benefits' = notable perks/credits; 'downgrade_paths' = product-change targets.\n"
+        "- 'best_category_uses' = {category: short note} for travel/dining/groceries/gas/everyday; keep it compact "
+        "and never duplicate values like '4x-4x'.\n"
+        "- 'card_benefits' = clean benefit objects with {name, value, frequency, category, description, evidence, confidence}. "
+        "Include all notable perks/credits/anniversary benefits, including recurring monthly/semiannual/annual "
+        "credits and lounge/free-night/anniversary point benefits. Do not include raw JSON-LD/title/meta/article boilerplate; "
+        "'downgrade_paths' = product-change targets.\n"
         "- 'currency' is the loyalty currency (e.g. Chase Ultimate Rewards), never USD.\n"
         "- Use numbers only (no commas). Leave unknown fields null.\n\n"
         "=== PAGE TEXT START ===\n"
@@ -429,7 +747,14 @@ def extract_offer(
         )
     except anthropic.APIError as exc:
         raise _provider_unavailable(exc) from exc
-    return resp.parsed_output
+    ext = resp.parsed_output
+    if ext and ext.card_benefits:
+        ext.card_benefits = _normalize_card_benefits(ext.card_benefits)
+    if ext and ext.earn_multipliers:
+        normalized = _normalize_earn_multipliers({item.category: item.multiplier for item in ext.earn_multipliers})
+        ext.earn_multipliers = [EarnMultiplier(category=k, multiplier=v) for k, v in (normalized or {}).items()] or None
+        ext.best_category_uses = _normalize_best_category_uses(ext.best_category_uses, normalized)
+    return ext
 
 
 # ---------------------------------------------------------------------------
@@ -607,94 +932,6 @@ def _run_web_research(system: str, prompt: str, max_uses: int, max_tokens: int =
     return result
 
 
-def research_offers_text(cards: list[dict], max_uses: int | None = None) -> str:
-    """Cited web research for current + all-time-peak offers across several cards."""
-    lines = "\n".join(
-        f"- {c.get('issuer','').strip()} {c.get('product_name','').strip()}" for c in cards
-    )
-    system = (
-        "You research PUBLIC credit-card offer data for a private churning tracker. "
-        "Search current public pages only; never request or infer private user data. "
-        "Prefer official issuer pages and reputable offer-history trackers."
-    )
-    prompt = (
-        "Search the web for public offer data for each card below. For each, report: current "
-        "welcome offer points/cash, minimum spend and spend window (months), annual fee, "
-        "first-year statement credits, the ALL-TIME-BEST public welcome offer (points + date) "
-        "and SEPARATELY any highest targeted/incognito/phone offer, refer-a-friend bonus, "
-        "key benefits, and best spend categories. Cite source URLs and dates. Keep each card "
-        "in its own clearly labeled section. Do not include private user data.\n\n"
-        f"{lines}"
-    )
-    uses = max_uses if max_uses is not None else max(4, min(12, len(cards) * 2))
-    return _run_web_research(system, prompt, uses, max_tokens=4000)["text"]
-
-
-def research_product_offers(cards: list[dict], max_uses: int | None = None) -> dict[str, Any]:
-    """Churn Control-style batched cited research for unresolved products."""
-    lines = "\n".join(
-        f"- {c.get('issuer','').strip()} {c.get('product_name','').strip()}" for c in cards
-    )
-    system = (
-        "You are doing public web research for a private credit-card churning tracker. "
-        "Search current public pages only. Never request, use, or infer private user information. "
-        "Prefer official issuer pages and reputable offer-history trackers. Keep each card's findings "
-        "in a clearly labeled section."
-    )
-    prompt = (
-        "Search the web for public offer data for each card below. For each card, cite current welcome "
-        "offer points/cash, minimum spend and spend window, annual fee, statement credits/first-year "
-        "credits, earn multipliers, all-time-best or highest-ever public offer and date if available, "
-        "highest targeted/incognito/phone/prequalified offer separately if found, whether it reports to "
-        "personal credit, referral bonus, benefits, downgrade paths, and issuer eligibility rules/tags. "
-        "Return compact sections with source URLs and dates when available. Do not include private data.\n\n"
-        f"{lines}"
-    )
-    uses = max_uses if max_uses is not None else max(4, min(config.WEB_SEARCH_MAX_USES_PER_BATCH, len(cards) + 2))
-    max_tokens = min(8000, 2500 + len(cards) * 550)
-    return _run_web_research(system, prompt, uses, max_tokens=max_tokens)
-
-
-def extract_researched_offers(
-    cards: list[dict],
-    research_text: str,
-    source_urls: list[str] | None = None,
-) -> list[OfferExtraction]:
-    """Parse compact cited research into one OfferExtraction per input card."""
-    if not cards or not research_text.strip():
-        return []
-    client = _client()
-    payload = [{"issuer": c.get("issuer"), "product_name": c.get("product_name")} for c in cards]
-    prompt = (
-        "Parse the compact public web-research report below into structured card "
-        "offer facts. Return exactly one object per input card in the same order. "
-        "Use only the report text; do not browse or infer private/targeted account data.\n\n"
-        "Rules:\n"
-        "- current_offer_* fields must describe the current PUBLIC offer only.\n"
-        "- Put invite-only/incognito/prequalified/phone/mail/as-high-as offers in "
-        "targeted_peak_offer_* fields, not public current or public peak fields.\n"
-        "- peak_offer_points is the all-time best PUBLIC welcome offer; never lower "
-        "than current_offer_points when both are known.\n"
-        "- Include source_url/product_url when the report gives a cited URL.\n"
-        "- Mark found=false and confidence below 0.5 if the report does not cover the card.\n\n"
-        f"INPUT CARDS:\n{json.dumps(payload, ensure_ascii=True)}\n\n"
-        f"KNOWN SOURCE URLS:\n{json.dumps(source_urls or [], ensure_ascii=True)}\n\n"
-        "RESEARCH REPORT:\n"
-        f"{research_text}"
-    )
-    try:
-        resp = client.messages.parse(
-            model=config.ANTHROPIC_MODEL,
-            max_tokens=min(8000, 1200 + len(cards) * 900),
-            messages=[{"role": "user", "content": prompt}],
-            output_format=OfferExtractionBatchResult,
-        )
-    except anthropic.APIError as exc:
-        raise _provider_unavailable(exc) from exc
-    result = resp.parsed_output
-    return result.offers if result else []
-
-
 def _tool_payload(message: Any) -> dict[str, Any]:
     for block in getattr(message, "content", []) or []:
         block_type = getattr(block, "type", None)
@@ -703,197 +940,3 @@ def _tool_payload(message: Any) -> dict[str, Any]:
         if isinstance(block, dict) and block.get("type") == "tool_use":
             return block.get("input", {}) or {}
     raise IngestionUnavailable("LLM response did not contain the required tool-use payload.")
-
-
-def _research_offer_tool_schema() -> dict[str, Any]:
-    row_props: dict[str, Any] = {
-        "issuer": {"type": "string"},
-        "card_name": {"type": "string"},
-        "product_url": {"type": ["string", "null"]},
-        "source_url": {"type": ["string", "null"]},
-        "bonus_amount": {"type": ["number", "null"]},
-        "bonus_unit": {"type": ["string", "null"]},
-        "spend_requirement": {"type": ["number", "null"]},
-        "spend_window_months": {"type": ["integer", "null"]},
-        "peak_bonus_amount": {"type": ["number", "null"]},
-        "peak_bonus_unit": {"type": ["string", "null"]},
-        "peak_spend_requirement": {"type": ["number", "null"]},
-        "peak_offer_date": {"type": ["string", "null"]},
-        "peak_offer_source": {"type": ["string", "null"]},
-        "referral_bonus_amount": {"type": ["number", "null"]},
-        "referral_bonus_unit": {"type": ["string", "null"]},
-        "annual_fee": {"type": ["number", "null"]},
-        "first_year_credit_value": {"type": ["number", "null"]},
-        "earn_multipliers": {
-            "type": ["object", "null"],
-            "additionalProperties": {"type": "number"},
-        },
-        "best_category_uses": {
-            "type": ["object", "null"],
-            "additionalProperties": {"type": "string"},
-        },
-        "card_benefits": {"type": ["array", "null"], "items": {"type": "string"}},
-        "downgrade_paths": {"type": ["array", "null"], "items": {"type": "string"}},
-        "eligibility_tags": {"type": ["array", "null"], "items": {"type": "string"}},
-        "reports_to_personal_credit": {"type": ["boolean", "null"]},
-        "offer_expiration": {"type": ["string", "null"]},
-        "eligibility_language": {"type": ["string", "null"]},
-        "is_business_card": {"type": "boolean"},
-        "is_targeted": {"type": "boolean"},
-        "offer_status": {
-            "type": "string",
-            "enum": ["public", "targeted", "affiliate", "expired", "unknown", "needs_review"],
-        },
-        "source_priority": {"type": "integer", "minimum": 1, "maximum": 5},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "evidence_snippets": {"type": "array", "items": {"type": "string"}},
-        "needs_review_reason": {"type": ["string", "null"]},
-        "found": {"type": "boolean"},
-    }
-    return {
-        "name": "record_researched_offer_rows",
-        "description": "Record compact public credit-card offer rows from cited research.",
-        "input_schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "rows": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": row_props,
-                        "required": [
-                            "issuer",
-                            "card_name",
-                            "is_business_card",
-                            "is_targeted",
-                            "offer_status",
-                            "source_priority",
-                            "confidence",
-                            "evidence_snippets",
-                            "found",
-                        ],
-                    },
-                }
-            },
-            "required": ["rows"],
-        },
-    }
-
-
-def _row_from_tool_payload(payload: dict[str, Any], fallback: dict[str, Any] | None = None) -> OfferScanRow:
-    fallback = fallback or {}
-    evidence_list = [str(item) for item in payload.get("evidence_snippets") or [] if str(item).strip()]
-    evidence: dict[str, list[str]] = {}
-    for field in (
-        "bonus_amount",
-        "bonus_unit",
-        "spend_requirement",
-        "spend_window_months",
-        "peak_bonus_amount",
-        "peak_offer_source",
-        "referral_bonus_amount",
-        "annual_fee",
-        "first_year_credit_value",
-        "earn_multipliers",
-        "best_category_uses",
-        "card_benefits",
-        "downgrade_paths",
-        "eligibility_tags",
-        "reports_to_personal_credit",
-        "eligibility_language",
-    ):
-        if payload.get(field) is not None and evidence_list:
-            evidence[field] = evidence_list[:4]
-    return OfferScanRow(
-        issuer=str(payload.get("issuer") or fallback.get("issuer") or ""),
-        card_name=str(payload.get("card_name") or fallback.get("product_name") or fallback.get("card_name") or ""),
-        product_url=payload.get("product_url"),
-        source_url=payload.get("source_url"),
-        bonus_amount=payload.get("bonus_amount"),
-        bonus_unit=payload.get("bonus_unit"),
-        spend_requirement=payload.get("spend_requirement"),
-        spend_window_months=payload.get("spend_window_months"),
-        peak_bonus_amount=payload.get("peak_bonus_amount"),
-        peak_bonus_unit=payload.get("peak_bonus_unit"),
-        peak_spend_requirement=payload.get("peak_spend_requirement"),
-        peak_offer_date=payload.get("peak_offer_date"),
-        peak_offer_source=payload.get("peak_offer_source"),
-        referral_bonus_amount=payload.get("referral_bonus_amount"),
-        referral_bonus_unit=payload.get("referral_bonus_unit"),
-        annual_fee=payload.get("annual_fee"),
-        first_year_credit_value=payload.get("first_year_credit_value"),
-        earn_multipliers=payload.get("earn_multipliers"),
-        best_category_uses=payload.get("best_category_uses"),
-        card_benefits=payload.get("card_benefits"),
-        downgrade_paths=payload.get("downgrade_paths"),
-        eligibility_tags=payload.get("eligibility_tags"),
-        reports_to_personal_credit=payload.get("reports_to_personal_credit"),
-        offer_expiration=payload.get("offer_expiration"),
-        eligibility_language=payload.get("eligibility_language"),
-        is_business_card=bool(payload.get("is_business_card")),
-        is_targeted=bool(payload.get("is_targeted")),
-        offer_status=payload.get("offer_status") or "unknown",
-        source_priority=int(payload.get("source_priority") or 2),
-        confidence=float(payload.get("confidence") or 0.0),
-        evidence_snippets=evidence,
-        needs_review_reason=payload.get("needs_review_reason"),
-        found=bool(payload.get("found")),
-    )
-
-
-def extract_researched_offer_rows(
-    cards: list[dict],
-    research_text: str,
-    source_urls: list[str] | None = None,
-) -> list[OfferScanRow]:
-    """Parse cited research into compact rows using a small explicit tool schema.
-
-    This intentionally avoids the larger OfferExtraction Pydantic grammar, which
-    can exceed Anthropic's strict compiled grammar limits during web fallback.
-    """
-    if not cards or not research_text.strip():
-        return []
-    client = _client()
-    tool = _research_offer_tool_schema()
-    payload = [{"issuer": c.get("issuer"), "product_name": c.get("product_name")} for c in cards]
-    prompt = (
-        "Parse the compact public web-research report below into one offer row per input card. "
-        "Every row must carry the exact issuer and card_name it supports. Use only the report text "
-        "and cited URLs. Do not browse again and do "
-        "not infer private/targeted account data.\n\n"
-        "Rules:\n"
-        "- bonus_amount/bonus_unit are the CURRENT PUBLIC welcome offer only.\n"
-        "- If the offer is cash or statement credit, use bonus_unit='cash back'.\n"
-        "- If the offer is points/miles, use the loyalty currency when known, otherwise points or miles.\n"
-        "- peak_bonus_amount is the all-time-best PUBLIC welcome offer only; leave null if not cited.\n"
-        "- Targeted/incognito/phone/prequalified/mail/as-high-as offers are offer_status='targeted' and "
-        "is_targeted=true. Do not mark them public.\n"
-        "- referral_bonus_amount/referral_bonus_unit are what the existing cardholder earns for referring.\n"
-        "- earn_multipliers is an object like {\"dining\": 4, \"travel\": 3}; best_category_uses is short user-facing notes.\n"
-        "- Include benefits, downgrade paths, eligibility tags, first-year credits, and reports_to_personal_credit only when cited.\n"
-        "- found=false with confidence below 0.5 if the report does not cover the exact card.\n"
-        "- evidence_snippets should be short copied snippets from the research report, not full pages.\n\n"
-        f"INPUT CARDS:\n{json.dumps(payload, ensure_ascii=True)}\n\n"
-        f"KNOWN SOURCE URLS:\n{json.dumps(source_urls or [], ensure_ascii=True)}\n\n"
-        "RESEARCH REPORT:\n"
-        f"{research_text}"
-    )
-    try:
-        message = client.messages.create(
-            model=config.ANTHROPIC_MODEL,
-            max_tokens=min(8000, 1200 + len(cards) * 800),
-            temperature=0,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": tool["name"]},
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except anthropic.APIError as exc:
-        raise _provider_unavailable(exc) from exc
-    rows_payload = _tool_payload(message).get("rows") or []
-    rows = []
-    for row_payload in rows_payload:
-        rows.append(_row_from_tool_payload(row_payload))
-    return rows
-

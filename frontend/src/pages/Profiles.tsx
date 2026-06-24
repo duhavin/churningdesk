@@ -1,11 +1,503 @@
-import { useEffect, useState } from "react";
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { useEffect, useMemo, useState } from "react";
+import { Cell, Pie, PieChart, ResponsiveContainer, Sector, Tooltip } from "recharts";
 import { api, type CatalogEntry, type HeldCard } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, Card, EmptyState, SectionTitle, Spinner, fmtMoney, fmtNum } from "../components/ui";
+import { Banner, Card, EmptyState, SectionTitle, Spinner, cardName, fmtMoney, fmtNum } from "../components/ui";
 import { CardForm } from "../components/CardForm";
 
 const PIE_COLORS = ["#22d3ee", "#f472b6", "#a78bfa", "#34d399", "#fbbf24", "#60a5fa", "#fb7185"];
+
+function StablePieSector(props: any) {
+  return <Sector {...props} className="profile-balance-sector" focusable="false" tabIndex={-1} stroke="#0f172a" strokeWidth={2} />;
+}
+
+function BalanceTooltip({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload ?? {};
+  const color = row.pieColor ?? row.fill ?? payload[0]?.color ?? "#22d3ee";
+
+  return (
+    <div className="rounded-md border border-ink-400 bg-ink-900 px-3 py-2 text-xs shadow-xl">
+      <div className="flex items-center gap-2 font-medium text-slate-100">
+        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+        <span>{row.currency}</span>
+      </div>
+      <div className="mt-1 space-y-0.5 font-mono text-[11px] text-slate-300">
+        <div>{fmtNum(row.balance)} pts</div>
+        <div>{row.cpp ? `${row.cpp} cpp` : "No valuation"}</div>
+        <div className="text-cyan-accent">{fmtMoney(row.value)}</div>
+      </div>
+    </div>
+  );
+}
+
+function benefitStatusClass(status: string, priority?: string) {
+  if (status === "suppressed" || priority === "paused") return "border-slate-500/40 bg-slate-500/10 text-slate-400";
+  if (priority === "attention") return "border-amber-300/40 bg-amber-300/10 text-amber-100";
+  if (priority === "needs_data" || priority === "needs_source") return "border-pink-accent/40 bg-pink-accent/10 text-pink-100";
+  if (status === "confirmed") return "border-emerald-300/30 bg-emerald-300/10 text-emerald-200";
+  if (status === "unconfirmed") return "border-slate-500/40 bg-slate-500/10 text-slate-300";
+  if (status === "used") return "border-emerald-300/30 bg-emerald-300/10 text-emerald-200";
+  if (status === "partial") return "border-cyan-accent/30 bg-cyan-accent/10 text-cyan-100";
+  if (status === "unused") return "border-amber-300/30 bg-amber-300/10 text-amber-100";
+  if (status === "upcoming") return "border-cyan-accent/30 bg-cyan-accent/10 text-cyan-accent";
+  return "border-ink-400 bg-ink-800 text-slate-400";
+}
+
+function verifiedLabel(row: any) {
+  if (row.verified_status === "verified") return "verified";
+  if (row.verified_status === "stale") return "stale";
+  return "needs source";
+}
+
+function statusLabel(status: string) {
+  if (status === "suppressed") return "paused";
+  return String(status || "unknown").replace(/_/g, " ");
+}
+
+function cleanBenefitName(value: any) {
+  return String(value || "Benefit")
+    .replace(/\[(?:text|title|meta|json-ld|table)\]\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactBenefitName(row: any) {
+  const label = String(row?.benefit_label || "").trim();
+  if (label) return label;
+  const cleaned = cleanBenefitName(row?.benefit_name);
+  return cleaned.length > 48 ? `${cleaned.slice(0, 45).trim()}...` : cleaned;
+}
+
+function benefitSourceClass(row: any) {
+  if (row.verified_status === "verified") return "text-emerald-300/80";
+  if (row.verified_status === "stale") return "text-amber-200/80";
+  return "text-pink-200/80";
+}
+
+function dateShort(value: any) {
+  const text = String(value || "").trim();
+  if (!text) return "no date";
+  return text.length >= 10 ? text.slice(5, 10) : text;
+}
+
+function daysLabel(row: any) {
+  if (row.days_remaining == null) return row.due_date ? dateShort(row.due_date) : "no date";
+  const days = Number(row.days_remaining);
+  if (!Number.isFinite(days)) return row.due_date ? dateShort(row.due_date) : "no date";
+  if (days < 0) return "expired";
+  if (days === 0) return "today";
+  if (days === 1) return "1 day";
+  return `${days} days`;
+}
+
+function benefitValueLabel(row: any) {
+  if (row.status === "suppressed") return "paused";
+  if (isBinaryBenefit(row)) {
+    if (row.tracking_kind === "enrollment") return "registration";
+    if (row.tracking_kind === "membership") return "membership";
+    return "access";
+  }
+  if (row.amount_available != null) return fmtMoney(row.amount_available);
+  return row.display_value || "needs data";
+}
+
+function benefitRemainingLabel(row: any) {
+  if (row.status === "suppressed") return "paused";
+  if (isBinaryBenefit(row)) return row.status === "confirmed" ? "done" : "open";
+  if (row.is_anniversary) return daysLabel(row);
+  if (row.amount_remaining != null) return fmtMoney(row.amount_remaining);
+  return row.display_value || "needs data";
+}
+
+function isBinaryBenefit(row: any) {
+  return ["access", "enrollment", "membership"].includes(row?.tracking_kind);
+}
+
+type BenefitEdit = {
+  amount_available: string;
+  amount_used: string;
+  add_amount: string;
+  notes: string;
+  suppressed?: boolean;
+  suppress_all?: boolean;
+};
+
+function needsAmountInput(row: any) {
+  return row.status === "needs_amount" || row.amount_source === "manual_usage";
+}
+
+function multiplierLabel(value: any) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return `${numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })}x`;
+  const text = String(value ?? "").trim();
+  return text ? (text.toLowerCase().includes("x") ? text : `${text}x`) : "";
+}
+
+function categoryUseLabel(item: any) {
+  if (!item?.covered) return "";
+  const rate = item.multiplier != null ? multiplierLabel(item.multiplier) : "";
+  const note = String(item.note ?? "").trim();
+  const normalizedRate = rate.toLowerCase().replace(/\s+/g, "");
+  const normalizedNote = note.toLowerCase().replace(/\s+/g, "");
+  const base = rate || note || "covered";
+  const detail = note && normalizedNote !== normalizedRate && !rate ? note : base;
+  return detail;
+}
+
+function balancesToRecord(rows: { currency: string; balance: string }[]) {
+  const point_balances: Record<string, number> = {};
+  for (const row of rows) {
+    const currency = row.currency.trim();
+    if (currency) point_balances[currency] = Number(row.balance) || 0;
+  }
+  return point_balances;
+}
+
+function numberOrNull(value: string, fallback: number | null = null) {
+  const trimmed = value.trim();
+  if (trimmed === "") return fallback;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function cappedBenefitUsed(value: number | null, available: number | null) {
+  if (value == null) return null;
+  const used = Math.max(0, value);
+  return available == null ? used : Math.min(used, Math.max(0, available));
+}
+
+function BenefitsTracker({
+  rows,
+  missing,
+  summary,
+  edits,
+  savingKey,
+  onEdit,
+  onSave,
+}: {
+  rows: any[];
+  missing: any[];
+  summary: any;
+  edits: Record<string, BenefitEdit>;
+  savingKey: string | null;
+  onEdit: (rowKey: string, patch: Partial<BenefitEdit>) => void;
+  onSave: (row: any, override?: Partial<BenefitEdit>) => void;
+}) {
+  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+  const [showAll, setShowAll] = useState(false);
+  const attentionRows = useMemo(
+    () => rows.filter((row) => row.priority === "attention" || row.priority === "needs_data" || row.status === "needs_amount"),
+    [rows],
+  );
+  const standardRows = useMemo(() => {
+    const attentionKeys = new Set(attentionRows.map((row) => row.row_key));
+    return rows.filter((row) => !attentionKeys.has(row.row_key));
+  }, [attentionRows, rows]);
+  const remainingValue =
+    summary?.known_remaining_value ??
+    rows.reduce((total, row) => total + (row.status === "unused" || row.status === "partial" ? Number(row.amount_remaining || 0) : 0), 0);
+  const pausedCount = summary?.suppressed ?? rows.filter((row) => row.status === "suppressed" || row.suppressed).length;
+  const activeCount = Math.max(rows.length - pausedCount, 0);
+  const needsReview =
+    summary?.needs_review ??
+    rows.filter((row) => row.priority === "needs_data" || row.priority === "needs_source" || row.verified_status !== "verified").length;
+  const hasExpandedBenefit = Object.values(expandedRows).some(Boolean);
+  const benefitGridClass = showAll || hasExpandedBenefit
+    ? "grid gap-2 pr-1 lg:grid-cols-2"
+    : "soft-scroll grid max-h-[56vh] gap-2 pr-1 lg:max-h-[620px] lg:grid-cols-2";
+  const missingGridClass = showAll
+    ? "grid gap-1.5 pr-1 sm:grid-cols-2"
+    : "soft-scroll grid max-h-[260px] gap-1.5 pr-1 sm:grid-cols-2";
+
+  const renderBenefit = (row: any) => {
+    const edit = edits[row.row_key] ?? {
+      amount_available: row.amount_available == null ? "" : String(row.amount_available),
+      amount_used: row.amount_used == null ? "" : String(row.amount_used),
+      add_amount: "",
+      notes: "",
+    };
+    const progress = row.progress == null ? 0 : Math.min(100, Math.max(0, Math.round(row.progress * 100)));
+    const expanded = Boolean(expandedRows[row.row_key]);
+    const showAmountInput = needsAmountInput(row);
+    const binaryBenefit = isBinaryBenefit(row);
+    const binaryConfirmed = row.status === "confirmed";
+    const paused = row.status === "suppressed" || row.suppressed;
+
+    return (
+      <div
+        key={row.row_key}
+        className={`rounded-md border bg-ink-900 px-2.5 py-2 sm:px-3 ${
+          paused
+            ? "border-slate-500/30 opacity-80"
+            : row.priority === "attention"
+            ? "border-amber-300/40"
+            : row.priority === "needs_data" || row.priority === "needs_source"
+              ? "border-pink-accent/30"
+              : "border-ink-400/70"
+        }`}
+      >
+        <div className="flex min-w-0 items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div
+              className="line-clamp-1 text-[13px] font-medium leading-snug text-slate-100"
+              title={cleanBenefitName(row.benefit_name)}
+            >
+              {compactBenefitName(row)}
+            </div>
+            <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-500 sm:text-[11px]">
+              <span className="max-w-full truncate">{cardName(row)}</span>
+              <span>{row.cadence}</span>
+              {row.timeframe_note ? <span>{row.timeframe_note}</span> : <span>due {dateShort(row.due_date)}</span>}
+            </div>
+          </div>
+          <span
+            className={`shrink-0 rounded-md border px-1.5 py-1 text-[10px] font-semibold uppercase leading-none ${benefitStatusClass(
+              row.status,
+              row.priority,
+            )}`}
+          >
+            {row.action_label || row.status_label || statusLabel(row.status)}
+          </span>
+        </div>
+
+        <div className="mt-1.5 grid grid-cols-3 gap-1.5 text-[10px] sm:gap-2 sm:text-[11px]">
+          <div className="min-w-0 rounded-md bg-ink-800/70 px-2 py-1">
+            <div className="text-slate-500">{row.is_anniversary ? "Value" : binaryBenefit ? "Type" : "Available"}</div>
+            <div className="truncate font-mono text-slate-200">{benefitValueLabel(row)}</div>
+          </div>
+          <div className="min-w-0 rounded-md bg-ink-800/70 px-2 py-1">
+            <div className="text-slate-500">{row.is_anniversary || binaryBenefit ? "Status" : "Used"}</div>
+            <div className="truncate font-mono text-cyan-accent">
+              {row.is_anniversary || binaryBenefit ? statusLabel(row.status) : fmtMoney(row.amount_used)}
+            </div>
+          </div>
+          <div className="min-w-0 rounded-md bg-ink-800/70 px-2 py-1">
+            <div className="text-slate-500">{row.is_anniversary || binaryBenefit ? "Due" : "Left"}</div>
+            <div className="truncate font-mono text-slate-200">{benefitRemainingLabel(row)}</div>
+          </div>
+        </div>
+
+        {row.amount_available != null && (
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-ink-500">
+            <div className="h-full bg-cyan-accent" style={{ width: `${progress}%` }} />
+          </div>
+        )}
+
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] sm:text-[11px]">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-slate-500">
+            <span className={benefitSourceClass(row)}>{verifiedLabel(row)}</span>
+            {row.amount_source === "manual_usage" && <span className="text-cyan-100">manual amount</span>}
+            {row.last_verified && <span>{row.last_verified.slice(0, 10)}</span>}
+            {row.source_url && (
+              <a className="hover:text-cyan-accent" href={row.source_url} target="_blank" rel="noreferrer">
+                source
+              </a>
+            )}
+          </div>
+          {binaryBenefit && !paused && (
+            <button
+              className={binaryConfirmed ? "btn-ghost h-7 px-2 py-0.5 text-[11px]" : "btn-primary h-7 px-2 py-0.5 text-[11px]"}
+              disabled={savingKey === row.row_key}
+              onClick={() => onSave(row, { amount_used: binaryConfirmed ? "0" : "1" })}
+            >
+              {savingKey === row.row_key ? "..." : binaryConfirmed ? "Open" : "Confirm"}
+            </button>
+          )}
+          <button
+            className="shrink-0 text-[11px] font-medium text-slate-400 hover:text-cyan-accent"
+            disabled={savingKey === row.row_key}
+            onClick={() =>
+              onSave(row, {
+                suppressed: !paused,
+                suppress_all: true,
+                notes: !paused ? (edit.notes.trim() || row.notes || "Paused") : (edit.notes.trim() || row.notes || ""),
+              })
+            }
+          >
+            {savingKey === row.row_key ? "..." : paused ? "resume" : "pause"}
+          </button>
+          <button
+            className="shrink-0 text-[11px] font-medium text-slate-400 hover:text-cyan-accent"
+            onClick={() => setExpandedRows((prev) => ({ ...prev, [row.row_key]: !prev[row.row_key] }))}
+          >
+            {expanded ? "close" : row.status === "used" ? "edit" : "track"}
+          </button>
+        </div>
+
+        {expanded && (
+          <div className="mt-3 rounded-md border border-ink-400/60 bg-ink-800/50 p-2">
+            <div
+              className={`grid gap-2 ${
+                binaryBenefit
+                  ? "sm:grid-cols-[minmax(0,1fr)_96px]"
+                  : showAmountInput
+                    ? "sm:grid-cols-[96px_96px_96px_minmax(0,1fr)_64px_56px]"
+                    : "sm:grid-cols-[96px_96px_minmax(0,1fr)_64px_56px]"
+              }`}
+            >
+              {showAmountInput && !binaryBenefit && (
+                <input
+                  className="input h-8 min-w-0 px-2 text-right text-xs"
+                  type="number"
+                  min="0"
+                  placeholder="available"
+                  value={edit.amount_available}
+                  onChange={(e) => onEdit(row.row_key, { amount_available: e.target.value })}
+                />
+              )}
+              {!binaryBenefit && (
+                <input
+                  className="input h-8 min-w-0 px-2 text-right text-xs"
+                  type="number"
+                  min="0"
+                  placeholder="add used"
+                  value={edit.add_amount}
+                  onChange={(e) => onEdit(row.row_key, { add_amount: e.target.value })}
+                />
+              )}
+              {!binaryBenefit && (
+                <input
+                  className="input h-8 min-w-0 px-2 text-right text-xs"
+                  type="number"
+                  min="0"
+                  placeholder="set total"
+                  value={edit.amount_used}
+                  onChange={(e) => onEdit(row.row_key, { amount_used: e.target.value })}
+                />
+              )}
+              <input
+                className="input h-8 min-w-0 px-2 text-xs"
+                placeholder="note"
+                value={edit.notes}
+                onChange={(e) => onEdit(row.row_key, { notes: e.target.value })}
+              />
+              <button
+                className="btn-primary h-8 justify-center px-2 text-xs"
+                disabled={savingKey === row.row_key}
+                onClick={() =>
+                  onSave(
+                    row,
+                    paused
+                      ? { suppressed: false, suppress_all: true, notes: edit.notes.trim() || row.notes || "" }
+                      : binaryBenefit
+                        ? { amount_used: binaryConfirmed ? "0" : "1" }
+                        : undefined,
+                  )
+                }
+              >
+                {savingKey === row.row_key ? "..." : paused ? "Resume" : binaryBenefit ? (binaryConfirmed ? "Open" : "Confirm") : "Add"}
+              </button>
+              {!binaryBenefit && (
+                <button
+                  className="btn-ghost h-8 justify-center px-2 text-xs"
+                  disabled={savingKey === row.row_key}
+                  onClick={() => onSave(row, { amount_used: edit.amount_used })}
+                >
+                  Set
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <Card className="space-y-3">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">Benefits</div>
+          <div className="text-sm text-slate-300">What needs attention first. Full ledger stays one tap away.</div>
+        </div>
+        <div className="text-xs text-slate-500">
+          {activeCount} active{pausedCount > 0 ? `, ${pausedCount} paused` : ""}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-md border border-ink-400/70 bg-ink-900 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">To do</div>
+          <div className="mt-1 text-lg font-semibold text-amber-100">{summary?.attention ?? attentionRows.length}</div>
+        </div>
+        <div className="rounded-md border border-ink-400/70 bg-ink-900 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Value left</div>
+          <div className="mt-1 text-lg font-semibold text-cyan-accent">{fmtMoney(remainingValue)}</div>
+        </div>
+        <div className="rounded-md border border-ink-400/70 bg-ink-900 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Review</div>
+          <div className="mt-1 text-lg font-semibold text-pink-100">{needsReview}</div>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState title="No benefits loaded yet" hint="Run Refresh Offers or Deep Refresh so active cards can pull verified benefit data." />
+      ) : (
+        <div className="space-y-3">
+          {attentionRows.length > 0 && (
+            <div>
+              <div className="mb-2 flex items-center justify-between text-xs">
+                <span className="font-medium uppercase tracking-wide text-amber-100">Use or confirm next</span>
+                <span className="text-slate-500">{attentionRows.length}</span>
+              </div>
+              <div className={benefitGridClass}>{attentionRows.map(renderBenefit)}</div>
+            </div>
+          )}
+          {attentionRows.length === 0 && (
+            <div className="rounded-md border border-emerald-300/25 bg-emerald-300/5 px-3 py-2 text-sm text-emerald-100">
+              No benefit action due right now.
+            </div>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-ink-400/60 pt-3 text-xs">
+            <span className="text-slate-500">
+              {rows.length} tracked benefit{rows.length === 1 ? "" : "s"}
+              {missing.length ? `, ${missing.length} missing data` : ""}
+            </span>
+            <button className="text-cyan-accent hover:underline" onClick={() => setShowAll((value) => !value)}>
+              {showAll ? "Hide full ledger" : "Show all tracked"}
+            </button>
+          </div>
+          {showAll && standardRows.length > 0 && (
+            <div>
+              <div className="mb-2 flex items-center justify-between text-xs">
+                <span className="font-medium uppercase tracking-wide text-slate-500">Full ledger</span>
+                <span className="text-slate-500">{standardRows.length}</span>
+              </div>
+              <div className={benefitGridClass}>{standardRows.map(renderBenefit)}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {missing.length > 0 && showAll && (
+        <div className="rounded-md border border-amber-300/30 bg-amber-300/5 p-3">
+          <div className="mb-2 flex items-center justify-between text-xs">
+            <span className="font-medium uppercase tracking-wide text-amber-100">Needs benefit data</span>
+            <span className="text-slate-500">{missing.length}</span>
+          </div>
+          <div className={missingGridClass}>
+            {missing.map((item, index) => (
+              <div key={`${item.held_card_id ?? index}-${item.product_id ?? "missing"}`} className="rounded-md bg-ink-900 px-2.5 py-2">
+                <div className="truncate text-xs font-medium text-slate-100">{item.display_name || cardName(item)}</div>
+                <div className="mt-0.5 line-clamp-1 text-[11px] text-slate-500">{item.reason}</div>
+                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-500">
+                  {item.verified_status && <span className={benefitSourceClass(item)}>{verifiedLabel(item)}</span>}
+                  {item.last_verified && <span>{item.last_verified.slice(0, 10)}</span>}
+                  {item.source_url && (
+                    <a className="hover:text-cyan-accent" href={item.source_url} target="_blank" rel="noreferrer">
+                      source
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 export function Profiles({ user, bump, flash }: { user: string; bump: number; flash: Flash }) {
   const [profile, setProfile] = useState<any>(null);
@@ -15,8 +507,12 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const [balances, setBalances] = useState<{ currency: string; balance: string }[]>([]);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [balanceSaving, setBalanceSaving] = useState(false);
+  const [balanceDraft, setBalanceDraft] = useState({ currency: "", balance: "" });
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<HeldCard | null>(null);
+  const [benefitEdits, setBenefitEdits] = useState<Record<string, BenefitEdit>>({});
+  const [savingBenefit, setSavingBenefit] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -27,6 +523,19 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
         setCatalog(cat);
         setBalances(Object.entries(p.point_balances ?? {}).map(([currency, balance]) => ({ currency, balance: String(balance) })));
         setNotes(p.notes ?? "");
+        setBenefitEdits(
+          Object.fromEntries(
+            (p.benefit_tracker?.benefits ?? []).map((row: any) => [
+              row.row_key,
+              {
+                amount_available: row.amount_available == null ? "" : String(row.amount_available),
+                amount_used: row.amount_used == null ? "" : String(row.amount_used),
+                add_amount: "",
+                notes: row.notes ?? "",
+              },
+            ]),
+          ),
+        );
       })
       .catch((e) => flash("error", e.message))
       .finally(() => setLoading(false));
@@ -50,10 +559,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const save = async () => {
     setSaving(true);
     try {
-      const point_balances: Record<string, number> = {};
-      for (const b of balances) {
-        if (b.currency.trim()) point_balances[b.currency.trim()] = Number(b.balance) || 0;
-      }
+      const point_balances = balancesToRecord(balances);
       await api.upsertProfile(user, { point_balances, notes });
       flash("info", "Profile saved.");
       load();
@@ -62,6 +568,45 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
     } finally {
       setSaving(false);
     }
+  };
+
+  const persistBalances = async (nextBalances: { currency: string; balance: string }[]) => {
+    setBalanceSaving(true);
+    try {
+      const point_balances = balancesToRecord(nextBalances);
+      await api.upsertProfile(user, { point_balances, notes });
+      setBalances(nextBalances);
+      flash("info", "Point balance saved.");
+      load();
+    } catch (e: any) {
+      flash("error", e.message);
+    } finally {
+      setBalanceSaving(false);
+    }
+  };
+
+  const saveBalanceDraft = async () => {
+    const currency = balanceDraft.currency.trim();
+    if (!currency) {
+      flash("error", "Select a currency first.");
+      return;
+    }
+    const next = [
+      ...balances.filter((b) => b.currency.trim().toLowerCase() !== currency.toLowerCase()),
+      { currency, balance: String(Number(balanceDraft.balance) || 0) },
+    ].sort((a, b) => a.currency.localeCompare(b.currency));
+    setBalanceDraft({ currency: "", balance: "" });
+    await persistBalances(next);
+  };
+
+  const editBalance = (currency: string) => {
+    const row = balances.find((b) => b.currency === currency);
+    setBalanceDraft({ currency, balance: row?.balance ?? "" });
+  };
+
+  const removeBalance = async (currency: string) => {
+    const next = balances.filter((b) => b.currency !== currency);
+    await persistBalances(next);
   };
 
   const onSubmitCard = async (payload: any) => {
@@ -74,7 +619,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   };
 
   const onDeleteCard = async (card: HeldCard) => {
-    if (!confirm(`Delete ${card.issuer} ${card.product_name}?`)) return;
+    if (!confirm(`Delete ${card.issuer} ${cardName(card)}?`)) return;
     await api.deleteCard(card.id);
     flash("info", "Card deleted.");
     load();
@@ -86,13 +631,62 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
     load();
   };
 
+  const saveBenefitUsage = async (
+    row: any,
+    override: Partial<BenefitEdit> = {},
+  ) => {
+    const existing = benefitEdits[row.row_key] ?? {
+      amount_available: row.amount_available == null ? "" : String(row.amount_available),
+      amount_used: row.amount_used == null ? "" : String(row.amount_used),
+      add_amount: "",
+      notes: row.notes ?? "",
+    };
+    const edit = { ...existing, ...override };
+    const binaryBenefit = isBinaryBenefit(row);
+    const amountAvailable = binaryBenefit ? null : numberOrNull(edit.amount_available, row.amount_available);
+    const amountUsed = binaryBenefit
+      ? (override.amount_used != null ? Number(override.amount_used) : row.amount_used)
+      : override.amount_used != null
+        ? cappedBenefitUsed(numberOrNull(String(override.amount_used), row.amount_used), amountAvailable)
+        : cappedBenefitUsed((row.amount_used ?? 0) + (numberOrNull(edit.add_amount, 0) ?? 0), amountAvailable);
+    setSavingBenefit(row.row_key);
+    try {
+      await api.saveBenefitUsage(user, {
+        held_card_id: row.held_card_id,
+        benefit_key: row.benefit_key,
+        benefit_name: row.benefit_name,
+        period_key: row.period_key,
+        period_start: row.period_start,
+        period_end: row.period_end,
+        amount_available: amountAvailable,
+        amount_used: amountUsed,
+        suppressed: edit.suppressed,
+        suppress_all: Boolean(edit.suppress_all),
+        notes: edit.notes.trim() || null,
+      });
+      flash("info", "Benefit usage saved.");
+      load();
+    } catch (e: any) {
+      flash("error", e.message);
+    } finally {
+      setSavingBenefit(null);
+    }
+  };
+
   if (loading && !profile) return <Spinner />;
 
   const f24 = profile?.five_24;
   const positiveBalances = profile?.balance_breakdown?.filter((b: any) => b.value > 0) ?? [];
+  const positiveBalanceChart = positiveBalances.map((row: any, i: number) => ({
+    ...row,
+    pieColor: PIE_COLORS[i % PIE_COLORS.length],
+  }));
   const balanceBreakdown = profile?.balance_breakdown ?? [];
   const categoryCoverage = profile?.category_coverage ?? [];
   const coveredCategories = categoryCoverage.filter((c: any) => c.covered).length;
+  const benefitTracker = profile?.benefit_tracker ?? { benefits: [], missing: [], summary: {} };
+  const benefitRows = benefitTracker.benefits ?? [];
+  const benefitMissing = benefitTracker.missing ?? [];
 
   return (
     <div className="space-y-6">
@@ -118,6 +712,21 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
         </Card>
       </div>
 
+      <BenefitsTracker
+        rows={benefitRows}
+        missing={benefitMissing}
+        summary={benefitTracker.summary ?? {}}
+        edits={benefitEdits}
+        savingKey={savingBenefit}
+        onEdit={(rowKey, patch) =>
+          setBenefitEdits((prev) => ({
+            ...prev,
+            [rowKey]: { ...(prev[rowKey] ?? { amount_available: "", amount_used: "", add_amount: "", notes: "" }), ...patch },
+          }))
+        }
+        onSave={saveBenefitUsage}
+      />
+
       {categoryCoverage.length > 0 && (
         <Card>
           <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
@@ -135,11 +744,11 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                 <div className="text-[11px] uppercase tracking-wide text-slate-500">{item.category}</div>
                 {item.covered ? (
                   <>
-                    <div className="mt-1 text-sm font-medium text-slate-100">{item.product_name}</div>
+                    <div className="mt-1 text-sm font-medium text-slate-100">{cardName(item)}</div>
                     <div className="text-[11px] text-slate-500">{item.issuer}</div>
                     <div className="mt-1 text-xs text-cyan-100">
-                      {item.multiplier ? `${item.multiplier}x` : "covered"}
-                      {item.note ? ` - ${item.note}` : ""}
+                      {categoryUseLabel(item)}
+                      {item.is_fallback && <span className="ml-1 text-slate-500">from everyday</span>}
                     </div>
                   </>
                 ) : (
@@ -155,39 +764,55 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
         <div className="xl:col-span-2">
           <SectionTitle title="Point Balances" subtitle="Encrypted at rest. Currencies come from known cards." />
           <Card className="space-y-3">
-            <div className="space-y-2">
-              {balances.map((b, i) => (
-                <div key={i} className="grid grid-cols-[minmax(0,1fr)_108px_34px] gap-2 sm:grid-cols-[minmax(0,1fr)_140px_36px]">
-                  <select
-                    className="input min-w-0"
-                    value={b.currency}
-                    onChange={(e) => setBalances((p) => p.map((x, j) => (j === i ? { ...x, currency: e.target.value } : x)))}
-                  >
-                    <option value="">Currency</option>
-                    {currencyOptions.map((currency) => (
-                      <option key={currency} value={currency}>{currency}</option>
-                    ))}
-                  </select>
-                  <input
-                    className="input min-w-0 text-right"
-                    type="number"
-                    placeholder="0"
-                    value={b.balance}
-                    onChange={(e) => setBalances((p) => p.map((x, j) => (j === i ? { ...x, balance: e.target.value } : x)))}
-                  />
-                  <button
-                    className="btn-ghost h-9 justify-center px-0"
-                    aria-label="Remove balance"
-                    onClick={() => setBalances((p) => p.filter((_, j) => j !== i))}
-                  >
-                    x
-                  </button>
-                </div>
-              ))}
+            {balances.length === 0 ? (
+              <div className="rounded-md border border-ink-400/70 bg-ink-900 px-3 py-2 text-sm text-slate-500">
+                No point balances saved yet.
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                {balances.map((b) => (
+                  <div key={b.currency} className="flex items-center justify-between gap-3 rounded-md border border-ink-400/70 bg-ink-900 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-slate-100">{b.currency}</div>
+                      <div className="font-mono text-xs text-cyan-accent">{fmtNum(b.balance)} pts</div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3 text-xs">
+                      <button className="text-slate-400 hover:text-cyan-accent" onClick={() => editBalance(b.currency)}>
+                        edit
+                      </button>
+                      <button className="text-slate-500 hover:text-pink-accent" onClick={() => removeBalance(b.currency)} disabled={balanceSaving}>
+                        remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="rounded-md border border-ink-400/70 bg-ink-800/50 p-3">
+              <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">Add / update balance</div>
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px_70px]">
+                <select
+                  className="input min-w-0"
+                  value={balanceDraft.currency}
+                  onChange={(e) => setBalanceDraft((p) => ({ ...p, currency: e.target.value }))}
+                >
+                  <option value="">Currency</option>
+                  {currencyOptions.map((currency) => (
+                    <option key={currency} value={currency}>{currency}</option>
+                  ))}
+                </select>
+                <input
+                  className="input min-w-0 text-right"
+                  type="number"
+                  placeholder="0"
+                  value={balanceDraft.balance}
+                  onChange={(e) => setBalanceDraft((p) => ({ ...p, balance: e.target.value }))}
+                />
+                <button className="btn-primary h-9 justify-center px-2" onClick={saveBalanceDraft} disabled={balanceSaving}>
+                  {balanceSaving ? "..." : "Save"}
+                </button>
+              </div>
             </div>
-            <button className="btn-ghost w-full justify-center sm:w-auto" onClick={() => setBalances((p) => [...p, { currency: currencyOptions[0] ?? "", balance: "" }])}>
-              Add currency
-            </button>
             <div>
               <span className="label mt-2">Notes</span>
               <textarea className="input min-h-20" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
@@ -200,18 +825,27 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
           {positiveBalances.length > 0 && (
             <Card className="mt-4">
               <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">Value by currency</div>
-              <div className="h-[180px] sm:h-[200px]">
+              <div className="profile-balance-chart h-[180px] sm:h-[200px]">
                 <ResponsiveContainer>
                   <PieChart>
-                    <Pie data={positiveBalances} dataKey="value" nameKey="currency" innerRadius={42} outerRadius={76} paddingAngle={2} stroke="none">
-                      {positiveBalances.map((_: any, i: number) => (
-                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    <Pie
+                      data={positiveBalanceChart}
+                      dataKey="value"
+                      nameKey="currency"
+                      innerRadius={42}
+                      outerRadius={76}
+                      activeShape={StablePieSector}
+                      isAnimationActive={false}
+                      paddingAngle={2}
+                      stroke="#0f172a"
+                      strokeWidth={2}
+                      rootTabIndex={-1}
+                    >
+                      {positiveBalanceChart.map((row: any, i: number) => (
+                        <Cell key={i} className="profile-balance-sector" fill={row.pieColor} focusable="false" tabIndex={-1} />
                       ))}
                     </Pie>
-                    <Tooltip
-                      formatter={(v: any) => fmtMoney(v as number)}
-                      contentStyle={{ background: "#10151f", border: "1px solid #2a3447", borderRadius: 8, fontSize: 12 }}
-                    />
+                    <Tooltip content={<BalanceTooltip />} cursor={false} wrapperStyle={{ outline: "none" }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -284,7 +918,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
               <ul className="space-y-1 text-sm">
                 {f24.contributing.map((c: any, i: number) => (
                   <li key={i} className="flex justify-between gap-3">
-                    <span className="min-w-0 text-slate-200">{c.issuer} {c.product_name}</span>
+                    <span className="min-w-0 text-slate-200">{c.issuer} {cardName(c)}</span>
                     <span className="shrink-0 text-slate-500">{c.date_opened}</span>
                   </li>
                 ))}
@@ -298,12 +932,12 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
             <EmptyState title="No cards yet" hint="Add a held card to start tracking eligibility and deadlines." />
           ) : (
             <>
-              <div className="mt-4 space-y-2 md:hidden">
+              <div className="soft-scroll mt-4 max-h-[56vh] space-y-1 pr-1 md:hidden">
                 {cards.map((c) => (
-                  <Card key={c.id} className="space-y-1.5 px-3 py-2">
-                    <div className="flex items-start justify-between gap-3">
+                  <Card key={c.id} className="space-y-1 px-2.5 py-1.5">
+                    <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-slate-100">{c.product_name}</div>
+                        <div className="truncate text-[13px] font-medium leading-5 text-slate-100">{cardName(c)}</div>
                         <div className="text-[11px] text-slate-500">{c.issuer} - {c.ownership}</div>
                       </div>
                       <span className="shrink-0 text-xs text-slate-300">{c.status}</span>
@@ -314,7 +948,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                       <span>Renewal {c.renewal_date ?? "none"}</span>
                       <span>Limit {fmtMoney(c.credit_limit)}</span>
                     </div>
-                    <div className="line-clamp-2 text-[11px] leading-tight text-slate-300">
+                    <div className="line-clamp-1 text-[11px] leading-tight text-slate-300">
                       Min spend: {c.min_spend_requirement ? `${fmtMoney(c.min_spend_progress ?? 0)} / ${fmtMoney(c.min_spend_requirement)}` : "none"}
                       <span className="text-slate-500"> | </span>
                       Bonus: {bonusText(c)}
@@ -332,12 +966,12 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                   </Card>
                 ))}
               </div>
-              <div className="mt-4 hidden space-y-2 md:block">
+              <div className="soft-scroll mt-4 hidden max-h-[620px] space-y-2 pr-1 md:block">
                 {cards.map((c) => (
                   <Card key={c.id} className="px-3 py-2">
                     <div className="grid gap-3 lg:grid-cols-[minmax(220px,1.4fr)_minmax(170px,0.8fr)_minmax(220px,1fr)_auto] lg:items-center">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-slate-100">{c.product_name}</div>
+                        <div className="truncate text-sm font-medium text-slate-100">{cardName(c)}</div>
                         <div className="text-[11px] text-slate-500">{c.issuer} - {c.ownership}</div>
                         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
                           <span>Last 4 {c.last4 ? `..${c.last4}` : "none"}</span>

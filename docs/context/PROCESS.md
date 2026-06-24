@@ -17,6 +17,14 @@ human stays in.
   static parse → deterministic short-circuit → batched LLM → **cited web-search fallback**
   (gated; only for stale + hard-to-find cards; see `DATA_RELIABILITY.md`).
 
+### Rendered fallback
+
+Deep refresh may use `backend/ingestion/rendered_fetch.py` after static HTTP and compact
+extraction fail on an already-known public URL. It uses Crawl4AI to render a small capped URL
+set, then sends the rendered result back through the same static parser, evidence logging,
+review queue, public/targeted separation, and peak monotonicity rules. It does not discover
+private/login/CAPTCHA pages and is not the default refresh path.
+
 ## 3. Verify / gate (don't trust blindly)
 - `backend/ingestion/validate.py` — delta-gating: first sight commits with provenance;
   large offer changes (> threshold) and any eligibility-rule change go to a **review queue**
@@ -49,3 +57,16 @@ human stays in.
 
 **Human stays in the loop at:** review queue (data accuracy) and the apply decision.
 Everything else is automated.
+
+## Research resolver note
+
+Deep refresh routes stale or incomplete cards through
+`backend/ingestion/research_resolver.py`: focused cached searches, real cited URLs, cached
+HTTP fetches, source adapters, then compact batched LLM snippets only for exceptions. This
+is the web-search fallback named in step 2; it is not a browser-per-card workflow.
+Before search, `CardReference` supplies known aliases, issuer domains, pinned URLs, and
+learned verified URLs so repeat refreshes can go straight to useful static sources.
+Trusted roundup pages are also inspected for matching card-specific review/detail links;
+generic anchors like "Read our review" use the surrounding row/paragraph context to identify
+the card. Those detail pages are fetched and parsed before falling back to compact LLM
+snippets.

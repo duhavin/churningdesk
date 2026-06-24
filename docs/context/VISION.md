@@ -17,7 +17,7 @@
   annual fees, point balances + value).
 - See **one ranked list of the most valuable next moves**, each with the **binding reason**
   (e.g. "Apply now — 100k MR, near peak, Chase-first slot still open" / "Wait — 40% below
-  peak" / "Refer Marilyn into Ink — +$X to Davin" / "Use the Gold card for groceries").
+  peak" / "Refer User B into Ink — +$X to User A" / "Use the Gold card for groceries").
 - Confirm and act. The app did the thinking; we sanity-check and apply.
 
 ## What "best route" means
@@ -34,8 +34,10 @@
 - Both users are compared **together**, not in isolation.
 - **Referrals both directions**: if one should open a card the other holds, route through
   the holder's referral link to capture the referral bonus *on top of* the welcome bonus.
-- **No redundant cards**: never recommend a card (or same product-family) a user already
-  holds; re-eligible cards return as "requeue".
+- **No redundant cards per person**: never recommend a card (or same product-family) a user
+  already holds; re-eligible cards return as "requeue". Household overlap can still be
+  useful when both people have their own bonus history, credits, lounge access, or separate
+  spend patterns.
 - **Diversify** currencies and spend categories across the household.
 
 ## Streamlined, but verified

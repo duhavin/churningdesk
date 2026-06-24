@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..crypto import MissingKeyError
 from ..db import get_db
+from ..logic import benefits as benefits_logic
+from ..logic.catalog import effective_catalog
 from ..logic import eligibility as elig
-from ..product_identity import product_variant_key
+from ..product_identity import canonical_product_key, product_display_name, product_variant_key
 
 router = APIRouter(prefix="/api", tags=["held-cards"])
 
@@ -34,6 +36,8 @@ def serialize_held(h: models.HeldCard) -> dict:
         "product_id": h.product_id,
         "issuer": h.issuer,
         "product_name": h.product_name,
+        "display_name": product_display_name(h.issuer, h.product_name),
+        "canonical_key": canonical_product_key(h.issuer, h.product_name),
         "last4": _safe(lambda: h.last4),
         "date_opened": h.date_opened.isoformat() if h.date_opened else None,
         "ownership": h.ownership,
@@ -67,7 +71,7 @@ def _key(issuer: str | None, product_name: str | None) -> tuple[str, str]:
 def _match_product(db: Session, issuer: str | None, product_name: str | None) -> models.CardProduct | None:
     exact = _key(issuer, product_name)
     variant = product_variant_key(issuer, product_name)
-    for product in db.scalars(select(models.CardProduct)).all():
+    for product in effective_catalog(db):
         if _key(product.issuer, product.product_name) == exact:
             return product
         if variant and product_variant_key(product.issuer, product.product_name) == variant:
@@ -181,11 +185,16 @@ def dashboard(user: str, db: Session = Depends(get_db)):
             continue
         # Retention calls due (renewal within window)
         if h.renewal_date and today <= h.renewal_date <= soon:
+            action = "Call retention"
+            detail = f"Renewal {h.renewal_date.isoformat()}; review fee before it posts."
             attention.append(
                 {
                     "type": "retention_call",
                     "severity": "high",
-                    "card": f"{h.issuer} {h.product_name}",
+                    "card": product_display_name(h.issuer, h.product_name),
+                    "due_date": h.renewal_date.isoformat(),
+                    "action": action,
+                    "detail": detail,
                     "message": f"Renewal {h.renewal_date.isoformat()} — call retention before the annual fee posts.",
                 }
             )
@@ -203,35 +212,51 @@ def dashboard(user: str, db: Session = Depends(get_db)):
                 deadline = elig.add_months(h.date_opened, product.current_offer_window_months)
             if deadline and requirement and not h.min_spend_completed and today <= deadline <= soon:
                 remaining = max(requirement - progress, 0)
+                action = "Finish min spend"
+                detail = f"${remaining:,.0f} left by {deadline.isoformat()}."
                 attention.append(
                     {
                         "type": "min_spend_deadline",
                         "severity": "high",
-                        "card": f"{h.issuer} {h.product_name}",
+                        "card": product_display_name(h.issuer, h.product_name),
+                        "due_date": deadline.isoformat(),
+                        "action": action,
+                        "detail": detail,
                         "message": f"Min-spend window closes ~{deadline.isoformat()} - ${remaining:.0f} remaining.",
                     }
                 )
         # Newly bonus-eligible again
         again_ok, again_date = elig.bonus_eligible_again(h)
         if h.welcome_bonus_earned and again_ok:
+            action = "Recheck welcome bonus"
+            detail = "Bonus clock has reset; use pipeline before reapplying."
             attention.append(
                 {
                     "type": "bonus_eligible_again",
                     "severity": "info",
-                    "card": f"{h.issuer} {h.product_name}",
+                    "card": product_display_name(h.issuer, h.product_name),
+                    "due_date": again_date.isoformat() if again_date else None,
+                    "action": action,
+                    "detail": detail,
                     "message": "Welcome bonus is eligible again — consider re-applying.",
                 }
             )
+
+    attention.extend(benefits_logic.build_benefit_attention(db, user, ATTENTION_WINDOW_DAYS))
 
     pending_changes = db.scalars(
         select(models.ProposedChange).where(models.ProposedChange.status == "pending")
     ).all()
     if pending_changes:
+        action = "Review data changes"
+        detail = f"{len(pending_changes)} proposed change(s) waiting in Card Universe."
         attention.append(
             {
                 "type": "pending_changes",
                 "severity": "info",
                 "card": "Card Universe",
+                "action": action,
+                "detail": detail,
                 "message": f"{len(pending_changes)} proposed change(s) awaiting review.",
             }
         )
@@ -243,11 +268,15 @@ def dashboard(user: str, db: Session = Depends(get_db)):
         )
     ).all()
     if unreviewed:
+        action = "Review discovered cards"
+        detail = f"{len(unreviewed)} new card(s) need catalog review."
         attention.append(
             {
                 "type": "unreviewed_discovered",
                 "severity": "info",
                 "card": "Card Universe",
+                "action": action,
+                "detail": detail,
                 "message": f"{len(unreviewed)} newly discovered card(s) to review.",
             }
         )

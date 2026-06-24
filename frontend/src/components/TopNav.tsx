@@ -1,39 +1,59 @@
 import { useEffect, useRef, useState } from "react";
 import type { RunStatus } from "../lib/api";
 
-export const TABS = ["Dashboard", "Household", "Profiles", "Card Plan", "Pipeline", "Card Universe"] as const;
+export const TABS = ["Dashboard", "Household", "Profiles", "Card Plan", "Pipeline", "Redemption", "Card Universe"] as const;
 export type Tab = (typeof TABS)[number];
 
 export function TopNav({
   tab,
   onTab,
   user,
-  users,
-  onUser,
+  onChangeProfile,
   runStatus,
   running,
   onDiscover,
   onRefresh,
+  pendingReviewCount = 0,
+  theme,
+  onTheme,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
   user: string;
-  users: string[];
-  onUser: (u: string) => void;
+  onChangeProfile: () => void;
   runStatus: RunStatus | null;
   running: boolean;
   onDiscover: () => void;
   onRefresh: (options?: Record<string, any>) => void;
+  pendingReviewCount?: number;
+  theme: "light" | "dark";
+  onTheme: (theme: "light" | "dark") => void;
 }) {
   const [runOpen, setRunOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setRunOpen(false);
+    const closeIfOutsideMenu = (e: PointerEvent) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      if (!target.closest("[data-top-menu-root]")) {
+        setRunOpen(false);
+        setSettingsOpen(false);
+      }
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    const closeOnEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setRunOpen(false);
+        setSettingsOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeIfOutsideMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutsideMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
   }, []);
 
   const llmOk = runStatus?.llm_available;
@@ -49,9 +69,8 @@ export function TopNav({
           </div>
           <div className="ml-auto flex items-center gap-2 md:hidden">
             <TopControls
-              users={users}
               user={user}
-              onUser={onUser}
+              onChangeProfile={onChangeProfile}
               runOpen={runOpen}
               setRunOpen={setRunOpen}
               running={running}
@@ -60,12 +79,18 @@ export function TopNav({
               onDiscover={onDiscover}
               onRefresh={onRefresh}
               runStatus={runStatus}
+              settingsOpen={settingsOpen}
+              setSettingsOpen={setSettingsOpen}
+              onSettingsTab={onTab}
+              pendingReviewCount={pendingReviewCount}
+              theme={theme}
+              onTheme={onTheme}
             />
           </div>
         </div>
 
-        <nav className="scrollbar-none flex max-w-full items-center gap-1 overflow-x-auto pb-1 md:flex-1 md:pb-0">
-          {TABS.map((t) => (
+        <nav className="scrollbar-none hidden max-w-full items-center gap-1 overflow-x-auto pb-1 md:flex md:flex-1 md:pb-0">
+          {TABS.filter((t) => t !== "Card Universe").map((t) => (
             <button
               key={t}
               onClick={() => onTab(t)}
@@ -82,9 +107,8 @@ export function TopNav({
 
         <div className="hidden items-center gap-2 md:ml-auto md:flex">
           <TopControls
-            users={users}
             user={user}
-            onUser={onUser}
+            onChangeProfile={onChangeProfile}
             runOpen={runOpen}
             setRunOpen={setRunOpen}
             running={running}
@@ -93,6 +117,12 @@ export function TopNav({
             onDiscover={onDiscover}
             onRefresh={onRefresh}
             runStatus={runStatus}
+            settingsOpen={settingsOpen}
+            setSettingsOpen={setSettingsOpen}
+            onSettingsTab={onTab}
+            pendingReviewCount={pendingReviewCount}
+            theme={theme}
+            onTheme={onTheme}
           />
         </div>
       </div>
@@ -101,9 +131,8 @@ export function TopNav({
 }
 
 function TopControls({
-  users,
   user,
-  onUser,
+  onChangeProfile,
   runOpen,
   setRunOpen,
   running,
@@ -112,10 +141,15 @@ function TopControls({
   onDiscover,
   onRefresh,
   runStatus,
+  settingsOpen,
+  setSettingsOpen,
+  onSettingsTab,
+  pendingReviewCount,
+  theme,
+  onTheme,
 }: {
-  users: string[];
   user: string;
-  onUser: (u: string) => void;
+  onChangeProfile: () => void;
   runOpen: boolean;
   setRunOpen: (updater: boolean | ((open: boolean) => boolean)) => void;
   running: boolean;
@@ -124,27 +158,22 @@ function TopControls({
   onDiscover: () => void;
   onRefresh: (options?: Record<string, any>) => void;
   runStatus: RunStatus | null;
+  settingsOpen: boolean;
+  setSettingsOpen: (updater: boolean | ((open: boolean) => boolean)) => void;
+  onSettingsTab: (tab: Tab) => void;
+  pendingReviewCount: number;
+  theme: "light" | "dark";
+  onTheme: (theme: "light" | "dark") => void;
 }) {
   return (
     <>
-      <div className="flex min-w-0 items-center rounded-lg border border-ink-400/60 bg-ink-800 p-0.5">
-        {users.map((u) => (
-          <button
-            key={u}
-            onClick={() => onUser(u)}
-            className={`rounded-md px-2 py-1 text-xs font-medium transition-colors sm:px-2.5 ${
-              user === u ? "bg-pink-accent/20 text-pink-accent" : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            {u}
-          </button>
-        ))}
-      </div>
-
-      <div className="relative">
+      <div className="relative" data-top-menu-root="run">
         <button
           className="btn-primary px-2.5 py-1 text-xs sm:px-3 sm:py-1.5 sm:text-sm"
-          onClick={() => setRunOpen((o) => !o)}
+          onClick={() => {
+            setSettingsOpen(false);
+            setRunOpen((o) => !o);
+          }}
           disabled={running}
         >
           {running ? (
@@ -176,11 +205,11 @@ function TopControls({
             />
             <RunItem
               label="Deep refresh"
-              hint="Uses capped web fallback for unresolved cards"
+              hint="Renders unresolved known pages, then capped web fallback"
               disabled={!llmOk || !webOk || running}
               onClick={() => {
                 setRunOpen(false);
-                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: false });
+                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_rendered_fallback: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: false });
               }}
             />
             <RunItem
@@ -192,7 +221,7 @@ function TopControls({
                 onRefresh({ valuations_only: true, refresh_valuations: true });
               }}
             />
-            <RunItem label="Run award search" hint="Later phase - needs a live award API" disabled />
+            <RunItem label="Award availability" hint="Use the Redemption tab; seats.aero is optional" disabled />
             {!llmOk && (
               <p className="px-2 py-1.5 text-[11px] text-amber-300/80">
                 Set ANTHROPIC_API_KEY in .env to enable discovery / refresh.
@@ -207,8 +236,74 @@ function TopControls({
         )}
       </div>
 
+      <div className="relative" data-top-menu-root="settings">
+        <button
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-ink-400/60 bg-ink-800 text-slate-300 transition-colors hover:bg-ink-700 hover:text-slate-100"
+          onClick={() => {
+            setRunOpen(false);
+            setSettingsOpen((open) => !open);
+          }}
+          aria-label="Settings"
+        >
+          <GearIcon />
+          {pendingReviewCount > 0 && (
+            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-ink-900 bg-rose-500 px-1 text-[9px] font-semibold leading-none text-white">
+              {pendingReviewCount > 9 ? "9+" : pendingReviewCount}
+            </span>
+          )}
+        </button>
+        {settingsOpen && (
+          <div className="settings-menu absolute right-0 mt-1 w-[calc(100vw-1.5rem)] max-w-[14rem] rounded-lg border border-ink-400/60 bg-ink-700 p-1 shadow-xl sm:w-56">
+            <div className="flex items-center justify-between gap-3 rounded-md px-2 py-2">
+              <span className="text-sm text-slate-100">Dark mode</span>
+              <button
+                type="button"
+                className={`settings-toggle relative h-5 w-9 overflow-hidden rounded-full border transition-colors ${theme === "dark" ? "is-dark" : ""}`}
+                aria-pressed={theme === "dark"}
+                onClick={() => onTheme(theme === "dark" ? "light" : "dark")}
+              >
+                <span
+                  className={`absolute left-0.5 top-0.5 h-3.5 w-3.5 rounded-full bg-slate-100 transition-transform ${
+                    theme === "dark" ? "translate-x-4" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+            <button
+              className="settings-menu-item w-full rounded-md px-2 py-2 text-left"
+              onClick={() => {
+                setSettingsOpen(false);
+                onChangeProfile();
+              }}
+            >
+              <div className="text-sm text-slate-100">Change profile</div>
+              <div className="text-[11px] text-slate-500">Current: {user}</div>
+            </button>
+            <div className="my-1 border-t border-ink-400/60" />
+            <button
+              className="settings-menu-item w-full rounded-md px-2 py-2 text-left text-sm text-slate-100"
+              onClick={() => {
+                setSettingsOpen(false);
+                onSettingsTab("Card Universe");
+              }}
+            >
+              Card Universe
+            </button>
+          </div>
+        )}
+      </div>
+
       <StatusPill runStatus={runStatus} />
     </>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z" />
+    </svg>
   );
 }
 

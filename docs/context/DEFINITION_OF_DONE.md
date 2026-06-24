@@ -33,5 +33,5 @@ Every code change must pass all of these before it's considered done.
 - [ ] Docs in `docs/context/` updated if the change alters intent, data model, or rules.
 
 ## Workspace
-- [ ] Changes confined to `C:\Users\Davin\Desktop\Churn CLAUDE`. `Desktop\Churn\churn_app`
+- [ ] Changes confined to `<repo-root>`. `<separate-churn-control-repo>`
       untouched.

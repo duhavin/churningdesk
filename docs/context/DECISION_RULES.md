@@ -44,10 +44,16 @@ Order by **estimated first-year / household value**, with strategic modifiers, t
 
 - **Referrals both directions**: if the other user holds a card this user is eligible for,
   recommend applying via their referral link; value the move as welcome + referral.
-- **No redundant cards**: never recommend a card a user already holds, or a same
-  product-family duplicate (e.g. Sapphire Preferred vs Reserve, Venture vs Venture X).
-  Re-eligible held cards return as **"requeue"**, not "open".
+- **No redundant cards per person**: never recommend a card a user already holds, or a same
+  product-family duplicate for that same user (e.g. Sapphire Preferred vs Reserve, Venture vs
+  Venture X). Re-eligible held cards return as **"requeue"**, not "open". The other household
+  member holding the card is **not** a close/cancel reason; overlapping accounts can be valid
+  for separate welcome bonuses, credits, lounge access, referrals, and individual spend.
 - **Eligibility/timing gate everything** — an ineligible card is never APPLY NOW.
+
+Additional same-family handling: same-family ladder cards can be surfaced as **alternate
+strategies** only, with explicit upgrade/downgrade/close-then-apply language. They do not
+enter the ordinary apply queue.
 
 ## Retention side
 

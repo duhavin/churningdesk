@@ -8,15 +8,19 @@ Produces, per user:
 from __future__ import annotations
 
 import datetime as dt
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import models
-from ..product_identity import family_key, product_variant_key
+from .. import config, models
+from ..product_identity import family_key, product_display_name, product_variant_key
 from . import catalog as catalog_logic
 from . import eligibility as elig
 from . import scoring
+
+if TYPE_CHECKING:
+    from .decision_context import DecisionContext
 
 ACTIONABLE_STATUSES = {scoring.APPLY_NOW, scoring.WATCH, scoring.WAIT}
 
@@ -29,11 +33,11 @@ def _exact_key(issuer: str | None, product_name: str | None) -> tuple[str, str]:
     return ((issuer or "").strip().lower(), (product_name or "").strip().lower())
 
 
-def build_pipeline(db: Session, user: str) -> dict:
-    held = elig.held_cards(db, user)
+def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = None) -> dict:
+    held = list(context.held_by_user.get(user, [])) if context else elig.held_cards(db, user)
     f24 = elig.five24(db, user, held=held)
     under_524 = f24.count < 5
-    entries = catalog_logic.scored_catalog(db, user, held=held)
+    entries = catalog_logic.scored_catalog(db, user, held=held, context=context)
 
     # Products the user already holds (open) — never recommend opening these
     # again. Re-applying a re-eligible card is surfaced via held_actions
@@ -52,16 +56,34 @@ def build_pipeline(db: Session, user: str) -> dict:
         if variant is not None
     }
     if held_product_ids:
-        linked_products = db.scalars(select(models.CardProduct).where(models.CardProduct.id.in_(held_product_ids))).all()
+        if context:
+            linked_products = [p for pid, p in context.products_by_id.items() if pid in held_product_ids]
+        else:
+            linked_products = db.scalars(select(models.CardProduct).where(models.CardProduct.id.in_(held_product_ids))).all()
         held_variants.update(
             variant
             for p in linked_products
             for variant in [product_variant_key(p.issuer, p.product_name)]
             if variant is not None
         )
+        held_families = {
+            family
+            for p in linked_products
+            for family in [family_key(p.issuer, p.product_name, p.product_family)]
+            if family is not None
+        }
+    else:
+        held_families = set()
+    held_families.update(
+        family
+        for h in held
+        if h.status != "Closed"
+        for family in [family_key(h.issuer, h.product_name)]
+        if family is not None
+    )
 
     # --- Eligible, not-already-held candidates -----------------------------
-    eligible = [
+    eligible_unheld = [
         e
         for e in entries
         if e["eligibility"]["eligible"]
@@ -72,28 +94,39 @@ def build_pipeline(db: Session, user: str) -> dict:
 
     def sort_key(e: dict):
         issuer_chase = _is_chase(e["issuer"])
-        is_chase_business = issuer_chase and e["ownership"] == "Business"
-        # Bias toward transferable currencies for long-term accumulation.
-        transferable = 1 if e.get("tag") == "transferable" else 0
-        # Ordering priority (higher tuple sorts first):
-        #  1. Chase-first while under 5/24
-        #  2. Chase business prioritized
-        #  3. offer_value, then peak_score
-        #  4. transferable bias and low annual fee as a final tiebreaker
+        is_ink = issuer_chase and e["ownership"] == "Business" and "ink" in (e["product_name"] or "").lower()
+        preferred_currency = 1 if (e.get("currency") or "").strip().lower() in config.PREFERRED_TRANSFERABLE_CURRENCIES else 0
+        large_bonus = 1 if (e.get("effective_points") or 0) >= config.MIN_APPLY_POINTS else 0
         chase_priority = 1 if (issuer_chase and under_524) else 0
         return (
             chase_priority,
-            1 if is_chase_business else 0,
+            1 if is_ink else 0,
+            1 if e.get("is_exceptional") else 0,
             e["offer_value"],
-            e["peak_score"],
-            transferable,
+            preferred_currency,
+            large_bonus,
             {scoring.APPLY_NOW: 3, scoring.WATCH: 2, scoring.WAIT: 1}.get(e["status"], 0),
+            e["peak_score"],
             -(e.get("annual_fee") or 0),
         )
 
+    eligible: list[dict] = []
+    family_alternates: list[dict] = []
+    for entry in eligible_unheld:
+        candidate_family = family_key(entry["issuer"], entry["product_name"], entry.get("product_family"))
+        if candidate_family is not None and candidate_family in held_families:
+            family_alternates.append(entry)
+        else:
+            eligible.append(entry)
+
     eligible.sort(key=sort_key, reverse=True)
+    family_alternates.sort(key=sort_key, reverse=True)
     actionable = [e for e in eligible if e["status"] in ACTIONABLE_STATUSES]
-    needs_data = [e for e in eligible if e["status"] == scoring.NEEDS_DATA]
+    needs_data = [
+        e
+        for e in eligible
+        if e["status"] in {scoring.NEEDS_DATA, scoring.LOW_PRIORITY}
+    ]
 
     next_cards = []
     for i, e in enumerate(actionable):
@@ -104,6 +137,7 @@ def build_pipeline(db: Session, user: str) -> dict:
                 "id": e["id"],
                 "issuer": e["issuer"],
                 "product_name": e["product_name"],
+                "display_name": e.get("display_name") or product_display_name(e["issuer"], e["product_name"]),
                 "ownership": e["ownership"],
                 "currency": e["currency"],
                 "tag": e.get("tag"),
@@ -114,6 +148,7 @@ def build_pipeline(db: Session, user: str) -> dict:
                 "current_offer_min_spend": e.get("current_offer_min_spend"),
                 "current_offer_window_months": e.get("current_offer_window_months"),
                 "targeted_beats_public": e["targeted_beats_public"],
+                "is_exceptional": e.get("is_exceptional", False),
                 "reason": reason,
             }
         )
@@ -124,6 +159,7 @@ def build_pipeline(db: Session, user: str) -> dict:
                 "id": e["id"],
                 "issuer": e["issuer"],
                 "product_name": e["product_name"],
+                "display_name": e.get("display_name") or product_display_name(e["issuer"], e["product_name"]),
                 "ownership": e["ownership"],
                 "currency": e["currency"],
                 "tag": e.get("tag"),
@@ -134,11 +170,38 @@ def build_pipeline(db: Session, user: str) -> dict:
                 "current_offer_min_spend": e.get("current_offer_min_spend"),
                 "current_offer_window_months": e.get("current_offer_window_months"),
                 "targeted_beats_public": e["targeted_beats_public"],
-                "reason": "Missing current offer, peak, or valuation data; refresh before using this in the apply queue.",
+                "is_exceptional": e.get("is_exceptional", False),
+                "reason": _needs_review_reason(e),
             }
         )
 
-    held_actions = _held_actions(db, held)
+    alternate_strategies = []
+    for e in family_alternates:
+        if e["status"] not in ACTIONABLE_STATUSES and e["status"] not in {scoring.NEEDS_DATA, scoring.LOW_PRIORITY}:
+            continue
+        alternate_strategies.append(
+            {
+                "id": e["id"],
+                "issuer": e["issuer"],
+                "product_name": e["product_name"],
+                "display_name": e.get("display_name") or product_display_name(e["issuer"], e["product_name"]),
+                "ownership": e["ownership"],
+                "currency": e["currency"],
+                "tag": e.get("tag"),
+                "status": e["status"],
+                "peak_score": e["peak_score"],
+                "offer_value": e["offer_value"],
+                "effective_points": e["effective_points"],
+                "current_offer_min_spend": e.get("current_offer_min_spend"),
+                "current_offer_window_months": e.get("current_offer_window_months"),
+                "targeted_beats_public": e["targeted_beats_public"],
+                "is_exceptional": e.get("is_exceptional", False),
+                "relationship": "same_family_ladder",
+                "reason": _alternate_strategy_reason(e),
+            }
+        )
+
+    held_actions = _held_actions(db, held, context=context)
 
     return {
         "user": user,
@@ -151,12 +214,19 @@ def build_pipeline(db: Session, user: str) -> dict:
         },
         "next_cards": next_cards,
         "needs_data": needs_data_cards,
+        "alternate_strategies": alternate_strategies,
         "held_actions": held_actions,
     }
 
 
 def _apply_reason(e: dict, under_524: bool) -> str:
     issuer_chase = _is_chase(e["issuer"])
+    if e.get("is_exceptional"):
+        return (
+            "Rare offer - grab it if eligibility and spend capacity are clean. "
+            f"{e['effective_points']:,} points, value ${e['offer_value']:.0f}, "
+            f"peak_score {e['peak_score']}."
+        )
     if issuer_chase and e["ownership"] == "Business" and under_524 and "ink" not in (e["product_name"] or "").lower():
         return (
             "Chase business: doesn't add to 5/24 but requires being under it - "
@@ -186,14 +256,46 @@ def _apply_reason(e: dict, under_524: bool) -> str:
     )
 
 
-def _product_lookup(db: Session, held: list[models.HeldCard]) -> dict[int, models.CardProduct]:
+def _needs_review_reason(e: dict) -> str:
+    if e["status"] == scoring.LOW_PRIORITY:
+        return (
+            "Excluded from apply queue: offer value is below the current value floor. "
+            f"Value ${e['offer_value']:.0f}, peak_score {e['peak_score']}."
+        )
+    return "Missing current offer, peak, or valuation data; refresh before using this in the apply queue."
+
+
+def _alternate_strategy_reason(e: dict) -> str:
+    if e["status"] == scoring.NEEDS_DATA:
+        return "Same-family ladder card; verify offer and peak before considering a product change or close/reapply path."
+    if e["status"] == scoring.LOW_PRIORITY:
+        return (
+            "Same-family ladder card excluded from apply queue: value is below the current floor. "
+            f"Value ${e['offer_value']:.0f}, peak_score {e['peak_score']}."
+        )
+    return (
+        "Same-family ladder card. Do not open as a duplicate; review only as an upgrade, downgrade, "
+        "or close-then-apply strategy if issuer rules and net value justify it. "
+        f"Signal: {e['status']}, value ${e['offer_value']:.0f}, peak_score {e['peak_score']}."
+    )
+
+
+def _product_lookup(
+    db: Session, held: list[models.HeldCard], context: "DecisionContext | None" = None
+) -> dict[int, models.CardProduct]:
     ids = {h.product_id for h in held if h.product_id}
     if not ids:
         return {}
+    if context:
+        return {pid: product for pid, product in context.products_by_id.items() if pid in ids}
     return {p.id: p for p in db.scalars(select(models.CardProduct).where(models.CardProduct.id.in_(ids))).all()}
 
 
-def _catalog_lookup(db: Session) -> dict[tuple[str, str], models.CardProduct]:
+def _catalog_lookup(
+    db: Session, context: "DecisionContext | None" = None
+) -> dict[tuple[str, str], models.CardProduct]:
+    if context:
+        return context.products_by_key
     return {
         ((p.issuer or "").strip().lower(), (p.product_name or "").strip().lower()): p
         for p in db.scalars(select(models.CardProduct)).all()
@@ -226,15 +328,15 @@ def _family_for_card(card: models.HeldCard, product: models.CardProduct | None) 
     return family_key(card.issuer, card.product_name)
 
 
-def _best_ladder_alternative(
+def _ladder_alternatives(
     card: models.HeldCard,
     product: models.CardProduct | None,
     products: list[models.CardProduct],
     vmap: dict[str, float],
-) -> dict | None:
+) -> list[dict]:
     family = _family_for_card(card, product)
     if not family:
-        return None
+        return []
 
     held_variant = product_variant_key(
         product.issuer if product else card.issuer,
@@ -259,15 +361,15 @@ def _best_ladder_alternative(
             {
                 "id": candidate.id,
                 "product_name": candidate.product_name,
+                "display_name": product_display_name(candidate.issuer, candidate.product_name),
                 "offer_value": score.offer_value,
                 "peak_score": score.peak_score,
                 "status": score.status,
             }
         )
 
-    if not candidates:
-        return None
-    return max(candidates, key=lambda c: (c["offer_value"], c["peak_score"]))
+    candidates.sort(key=lambda c: (c["offer_value"], c["peak_score"]), reverse=True)
+    return candidates[:3]
 
 
 def _list_len(value) -> int:
@@ -276,6 +378,63 @@ def _list_len(value) -> int:
     if isinstance(value, dict):
         return len([key for key, item in value.items() if key and item is not None])
     return 0
+
+
+def _household_overlap_index(
+    db: Session,
+    context: "DecisionContext | None" = None,
+) -> dict[tuple[str, int | tuple[str, str]], set[str]]:
+    active = (
+        [card for cards in context.active_held_by_user.values() for card in cards]
+        if context
+        else db.scalars(
+            select(models.HeldCard).where(
+                models.HeldCard.user.in_(config.USERS),
+                models.HeldCard.status != "Closed",
+            )
+        ).all()
+    )
+    products_by_id = context.products_by_id if context else _product_lookup(db, active, context=context)
+    index: dict[tuple[str, int | tuple[str, str]], set[str]] = {}
+    for card in active:
+        keys: set[tuple[str, int | tuple[str, str]]] = {("key", _exact_key(card.issuer, card.product_name))}
+        variant = product_variant_key(card.issuer, card.product_name)
+        if variant:
+            keys.add(("variant", variant))
+        if card.product_id:
+            keys.add(("id", card.product_id))
+            product = products_by_id.get(card.product_id)
+            if product:
+                keys.add(("key", _exact_key(product.issuer, product.product_name)))
+                product_variant = product_variant_key(product.issuer, product.product_name)
+                if product_variant:
+                    keys.add(("variant", product_variant))
+        for key_item in keys:
+            index.setdefault(key_item, set()).add(card.user)
+    return index
+
+
+def _overlap_users(
+    card: models.HeldCard,
+    product: models.CardProduct | None,
+    overlap_index: dict[tuple[str, int | tuple[str, str]], set[str]],
+) -> list[str]:
+    keys: set[tuple[str, int | tuple[str, str]]] = {("key", _exact_key(card.issuer, card.product_name))}
+    variant = product_variant_key(card.issuer, card.product_name)
+    if variant:
+        keys.add(("variant", variant))
+    if card.product_id:
+        keys.add(("id", card.product_id))
+    if product:
+        keys.add(("key", _exact_key(product.issuer, product.product_name)))
+        product_variant = product_variant_key(product.issuer, product.product_name)
+        if product_variant:
+            keys.add(("variant", product_variant))
+    users = set()
+    for key_item in keys:
+        users.update(overlap_index.get(key_item, set()))
+    users.discard(card.user)
+    return sorted(users)
 
 
 def _held_value_signal(card: models.HeldCard, product: models.CardProduct | None) -> tuple[int, list[str]]:
@@ -309,21 +468,26 @@ def _held_value_signal(card: models.HeldCard, product: models.CardProduct | None
     return round(max(0, min(score, 100))), drivers
 
 
-def _held_actions(db: Session, held: list[models.HeldCard]) -> list[dict]:
+def _held_actions(
+    db: Session, held: list[models.HeldCard], context: "DecisionContext | None" = None
+) -> list[dict]:
     today = dt.date.today()
-    vmap = catalog_logic.valuation_map(db)
-    product_by_id = _product_lookup(db, held)
-    product_by_key = _catalog_lookup(db)
+    vmap = context.valuations if context else catalog_logic.valuation_map(db)
+    product_by_id = _product_lookup(db, held, context=context)
+    product_by_key = _catalog_lookup(db, context=context)
     products = list(product_by_key.values())
+    overlap_index = _household_overlap_index(db, context=context)
     actions = []
     for h in held:
         if h.status == "Closed":
             continue
         again_ok, again_date = elig.bonus_eligible_again(h, as_of=today)
         product = _card_product(h, product_by_id, product_by_key)
+        household_overlap_users = _overlap_users(h, product, overlap_index)
         value_score, drivers = _held_value_signal(h, product)
         downgrade_paths = product.downgrade_paths if product and isinstance(product.downgrade_paths, list) else []
-        ladder_alternative = _best_ladder_alternative(h, product, products, vmap)
+        ladder_alternatives = _ladder_alternatives(h, product, products, vmap)
+        ladder_alternative = ladder_alternatives[0] if ladder_alternatives else None
         action = "keep"
         reason = f"Active — keep. Ongoing value score {value_score}/100 from {', '.join(drivers)}."
 
@@ -360,11 +524,17 @@ def _held_actions(db: Session, held: list[models.HeldCard]) -> list[dict]:
         elif action == "keep" and ladder_alternative:
             action = "ladder_review"
             reason = (
-                f"Review {ladder_alternative['product_name']} as a same-ladder move only if "
+                f"Review {ladder_alternative.get('display_name') or ladder_alternative['product_name']} as a same-ladder move only if "
                 "issuer rules allow product-change or close/reapply. "
                 f"Current offer signal: {ladder_alternative['status']}, "
                 f"value ${ladder_alternative['offer_value']:.0f}, "
                 f"peak_score {ladder_alternative['peak_score']}."
+            )
+
+        if household_overlap_users and action not in {"cancel", "downgrade"}:
+            reason += (
+                f" Household overlap with {', '.join(household_overlap_users)} is not a close/cancel reason; "
+                "evaluate this account on its own credits, fee, bonus history, and spend use."
             )
 
         actions.append(
@@ -372,6 +542,7 @@ def _held_actions(db: Session, held: list[models.HeldCard]) -> list[dict]:
                 "id": h.id,
                 "issuer": h.issuer,
                 "product_name": h.product_name,
+                "display_name": product_display_name(h.issuer, h.product_name),
                 "status": h.status,
                 "annual_fee": h.annual_fee,
                 "renewal_date": h.renewal_date.isoformat() if h.renewal_date else None,
@@ -382,7 +553,9 @@ def _held_actions(db: Session, held: list[models.HeldCard]) -> list[dict]:
                 "value_score": value_score,
                 "value_drivers": drivers,
                 "downgrade_paths": downgrade_paths,
+                "household_overlap_users": household_overlap_users,
                 "ladder_alternative": ladder_alternative,
+                "ladder_alternatives": ladder_alternatives,
             }
         )
     return actions

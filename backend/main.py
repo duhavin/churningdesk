@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,12 +16,16 @@ from . import config
 from .db import init_db
 from .routers import (
     blacklist,
+    benefits,
     cards,
     catalog,
+    categories,
     household,
     ingestion,
     pipeline,
     profiles,
+    references,
+    redemption,
     run,
     watchlist,
 )
@@ -62,11 +66,15 @@ def users():
 for r in (
     cards,
     catalog,
+    categories,
+    benefits,
     watchlist,
     blacklist,
     profiles,
     pipeline,
     household,
+    references,
+    redemption,
     ingestion,
     run,
 ):
@@ -84,7 +92,9 @@ if os.path.isdir(_DIST):
 
     @app.get("/{full_path:path}")
     def _spa(full_path: str):
-        # SPA fallback for client-side routing (non-/api paths).
+        # SPA fallback for client-side routing. API misses must stay JSON.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
         candidate = os.path.join(_DIST, full_path)
         if os.path.isfile(candidate):
             return FileResponse(candidate)

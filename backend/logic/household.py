@@ -1,4 +1,4 @@
-"""Household optimization — two-user (Davin + Marilyn) synergy.
+"""Household optimization — two-user (User A + User B) synergy.
 
 Combines both users' eligibility-gated pipelines into one cohesive plan:
 
@@ -8,8 +8,8 @@ Combines both users' eligibility-gated pipelines into one cohesive plan:
     card the other is eligible for and doesn't have, the application should go
     through the holder's referral link so the household earns the referral bonus
     *on top of* the welcome bonus,
-  * a merged "best next moves" queue ranked by household value (welcome offer +
-    any referral bonus the household can capture).
+  * a merged "best next moves" queue ranked by the per-user pipeline order plus
+    household value (welcome offer + any referral bonus the household can capture).
 
 Everything is derived from held-card timing + the scored catalog, so it updates
 automatically as cards are added/edited and never recommends a card a user
@@ -20,11 +20,11 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from .. import config, models
-from ..crypto import MissingKeyError
-from ..product_identity import product_variant_key
-from . import catalog as catalog_logic
-from . import eligibility as elig
+from ..product_identity import product_display_name, product_variant_key
 from . import pipeline as pipeline_logic
+from .decision_context import DecisionContext
+
+STATUS_PRIORITY = {"APPLY NOW": 3, "WATCH": 2, "WAIT": 1}
 
 
 def _key(issuer: str | None, name: str | None) -> tuple[str, str]:
@@ -60,20 +60,20 @@ def _candidate_referral_keys(nc: dict) -> set[tuple[str, int | tuple[str, str]]]
     return keys
 
 
-def _balances_for(db: Session, user: str) -> dict[str, float]:
-    profile = db.get(models.UserProfile, user)
-    try:
-        return dict((profile.point_balances if profile else None) or {})
-    except MissingKeyError:
-        return {}
-
-
 def _value_of(balances: dict[str, float], vmap: dict[str, float]) -> float:
     """Total estimated dollar value of a set of point balances (cpp is cents/pt)."""
     return round(
         sum((bal or 0) * vmap.get((cur or "").strip().lower(), 0.0) / 100.0 for cur, bal in balances.items()),
         2,
     )
+
+
+def _pipeline_rank_score(rank: object) -> int:
+    try:
+        value = int(rank)
+    except (TypeError, ValueError):
+        value = 999
+    return -value
 
 
 def _referral_reason(
@@ -84,8 +84,9 @@ def _referral_reason(
     ref_cash: float | None,
     ref_val: float | None,
 ) -> str:
+    display_name = nc.get("display_name") or product_display_name(nc.get("issuer"), nc.get("product_name"))
     base = (
-        f"{from_user} already holds {nc['product_name']} — have {from_user} send "
+        f"{from_user} already holds {display_name} - have {from_user} send "
         f"{to_user} a referral link so {to_user}'s application also earns {from_user} "
         "the referral bonus on top of the welcome offer"
     )
@@ -103,10 +104,11 @@ def _referral_reason(
 
 def build_household(db: Session) -> dict:
     users = config.USERS
-    vmap = catalog_logic.valuation_map(db)
-    products = {p.id: p for p in catalog_logic.effective_catalog(db)}
+    context = DecisionContext.load(db)
+    vmap = context.valuations
+    products = context.products_by_id
 
-    held_by_user = {u: elig.held_cards(db, u) for u in users}
+    held_by_user = {u: list(context.held_by_user.get(u, [])) for u in users}
     active_by_user = {u: [h for h in held_by_user[u] if h.status != "Closed"] for u in users}
     active_keys = {
         u: {_key(h.issuer, h.product_name) for h in active_by_user[u]} for u in users
@@ -117,8 +119,8 @@ def build_household(db: Session) -> dict:
         else set()
         for u in users
     }
-    balances_by_user = {u: _balances_for(db, u) for u in users}
-    pipelines = {u: pipeline_logic.build_pipeline(db, u) for u in users}
+    balances_by_user = {u: dict(context.point_balances_by_user.get(u, {})) for u in users}
+    pipelines = {u: pipeline_logic.build_pipeline(db, u, context=context) for u in users}
 
     # --- Per-user summary ---------------------------------------------------
     user_summaries: list[dict] = []
@@ -158,6 +160,7 @@ def build_household(db: Session) -> dict:
                 "id": h.id,
                 "issuer": h.issuer,
                 "product_name": h.product_name,
+                "display_name": product_display_name(h.issuer, h.product_name),
                 "date_opened": h.date_opened.isoformat() if h.date_opened else None,
                 "renewal_date": h.renewal_date.isoformat() if h.renewal_date else None,
                 "annual_fee": h.annual_fee,
@@ -177,6 +180,7 @@ def build_household(db: Session) -> dict:
                 product = products.get(nc["id"])
                 ref_pts = getattr(product, "referral_bonus_effective", None) if product else None
                 ref_cash = getattr(product, "referral_bonus_cash", None) if product else None
+                welcome_points = nc.get("effective_points") or (getattr(product, "current_offer_effective", None) if product else None)
                 cpp = vmap.get((nc.get("currency") or "").strip().lower(), 0.0)
                 ref_val = round(((ref_pts or 0) * cpp / 100.0) + (ref_cash or 0), 2)
                 if not ref_pts and not ref_cash:
@@ -188,18 +192,35 @@ def build_household(db: Session) -> dict:
                         "id": nc["id"],
                         "issuer": nc["issuer"],
                         "product_name": nc["product_name"],
+                        "display_name": nc.get("display_name") or product_display_name(nc["issuer"], nc["product_name"]),
                         "currency": nc.get("currency"),
+                        "welcome_points": welcome_points,
+                        "current_offer_points": welcome_points,
                         "referral_bonus_points": ref_pts,
                         "referral_bonus_cash": ref_cash,
+                        "household_points": (welcome_points or 0) + (ref_pts or 0),
                         "referral_value": ref_val,
                         "recipient_offer_value": nc["offer_value"],
                         "recipient_status": nc["status"],
                         "peak_score": nc["peak_score"],
                         "household_gain": round((nc["offer_value"] or 0) + (ref_val or 0), 2),
+                        "pipeline_rank": nc.get("rank"),
+                        "is_exceptional": nc.get("is_exceptional", False),
                         "reason": _referral_reason(from_user, to_user, nc, ref_pts, ref_cash, ref_val),
                     }
                 )
-    referrals.sort(key=lambda r: r["household_gain"], reverse=True)
+
+    def referral_sort_key(row: dict) -> tuple:
+        return (
+            STATUS_PRIORITY.get(row.get("recipient_status"), 0),
+            1 if row.get("is_exceptional") else 0,
+            _pipeline_rank_score(row.get("pipeline_rank")),
+            row.get("household_gain") or 0,
+            row.get("household_points") or 0,
+            row.get("peak_score") or 0,
+        )
+
+    referrals.sort(key=referral_sort_key, reverse=True)
 
     # --- Merged "best next moves" (both applicants, paired by card) ---------
     referral_index = {(r["to_user"], r["id"]): r for r in referrals}
@@ -211,6 +232,9 @@ def build_household(db: Session) -> dict:
                 continue
             ref = referral_index.get((u, nc["id"]))
             ref_val = ref["referral_value"] if ref and ref["referral_value"] else 0
+            welcome_points = nc.get("effective_points") or 0
+            referral_points = ref["referral_bonus_points"] if ref and ref.get("referral_bonus_points") else 0
+            referral_cash = ref["referral_bonus_cash"] if ref and ref.get("referral_bonus_cash") else 0
             product = products.get(nc["id"])
             moves.append(
                 {
@@ -218,16 +242,23 @@ def build_household(db: Session) -> dict:
                     "id": nc["id"],
                     "issuer": nc["issuer"],
                     "product_name": nc["product_name"],
+                    "display_name": nc.get("display_name") or product_display_name(nc["issuer"], nc["product_name"]),
                     "ownership": nc["ownership"],
                     "currency": nc.get("currency"),
                     "status": nc["status"],
                     "peak_score": nc["peak_score"],
                     "offer_value": nc["offer_value"],
                     "first_year_value": nc["offer_value"],
-                    "current_offer_points": getattr(product, "current_offer_effective", None) if product else None,
+                    "welcome_points": welcome_points,
+                    "referral_bonus_points": referral_points,
+                    "referral_bonus_cash": referral_cash,
+                    "household_points": welcome_points + referral_points,
+                    "current_offer_points": welcome_points or (getattr(product, "current_offer_effective", None) if product else None),
                     "current_offer_min_spend": getattr(product, "current_offer_min_spend", None) if product else None,
                     "current_offer_window_months": getattr(product, "current_offer_window_months", None) if product else None,
+                    "is_exceptional": nc.get("is_exceptional", False),
                     "household_value": round((nc["offer_value"] or 0) + ref_val, 2),
+                    "pipeline_rank": nc.get("rank"),
                     "route": f"Refer via {ref['from_user']}" if ref else "Direct application",
                     "referral_from": ref["from_user"] if ref else None,
                     "referral_value": ref["referral_value"] if ref else None,
@@ -235,17 +266,20 @@ def build_household(db: Session) -> dict:
                 }
             )
 
-    # Order by card (best household value first), then both applicants together,
-    # so the queue shows what each of us should open — not just one person.
-    by_card: dict[int, list[dict]] = {}
-    for m in moves:
-        by_card.setdefault(m["id"], []).append(m)
-    card_order = sorted(
-        by_card, key=lambda cid: max(x["household_value"] for x in by_card[cid]), reverse=True
-    )
-    ordered: list[dict] = []
-    for cid in card_order:
-        ordered.extend(sorted(by_card[cid], key=lambda x: users.index(x["user"])))
+    # Preserve Pipeline's decision ranking instead of alphabetizing or regrouping
+    # by product. Household value and points break close calls.
+    def move_sort_key(row: dict) -> tuple:
+        return (
+            STATUS_PRIORITY.get(row.get("status"), 0),
+            1 if row.get("is_exceptional") else 0,
+            _pipeline_rank_score(row.get("pipeline_rank")),
+            row.get("household_value") or 0,
+            row.get("household_points") or 0,
+            row.get("peak_score") or 0,
+            -users.index(row["user"]) if row.get("user") in users else -999,
+        )
+
+    ordered = sorted(moves, key=move_sort_key, reverse=True)
 
     return {
         "users": user_summaries,

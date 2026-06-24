@@ -1,9 +1,14 @@
 # --- Secrets & local data (NEVER commit) ---
 .env
+.env.*
+!.env.example
+!frontend/.env.example
 data/
+logs/
 *.sqlite
 *.sqlite3
 *.db
+*.bak*
 
 # --- Python ---
 __pycache__/
@@ -15,7 +20,9 @@ venv/
 .pytest_cache/
 
 # --- Runtime logs ---
+*.err
 *.log
+*.out
 
 # --- Node / frontend ---
 node_modules/
@@ -25,5 +32,11 @@ npm-debug.log*
 
 # --- Editor / OS ---
 .DS_Store
+nul
 .idea/
 .vscode/
+
+# --- Local agent/tool state ---
+.agents/
+.claude/
+.codex/

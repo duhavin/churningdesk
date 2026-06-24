@@ -15,4 +15,8 @@ anthropic>=0.40
 
 # Web fetch + clean-text extraction
 httpx>=0.27
-trafilatura>=1.9
+trafilatura>=1.9,<2.0
+
+# Optional rendered fallback for pages static HTTP cannot extract cleanly.
+# Keep trafilatura on the 1.x line because Crawl4AI currently pins lxml 5.x.
+crawl4ai==0.9.0

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { api, type CatalogEntry } from "../lib/api";
+import { api, type ApiPayload, type CardReference, type CatalogEntry, type HeldAction, type LadderAlternative, type PipelineCard, type PipelineResponse } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, Card, EmptyState, SectionTitle, Spinner, StatusBadge, fmtMoney } from "../components/ui";
+import { Banner, Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtMoney } from "../components/ui";
 import { CardForm } from "../components/CardForm";
 
 const ACTION_STYLE: Record<string, string> = {
@@ -20,26 +20,28 @@ const addMonths = (date: string, months: number) => {
 };
 
 export function Pipeline({ user, bump, flash }: { user: string; bump: number; flash: Flash }) {
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<PipelineResponse | null>(null);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [references, setReferences] = useState<CardReference[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
-  const [prefill, setPrefill] = useState<Record<string, any> | null>(null);
+  const [prefill, setPrefill] = useState<ApiPayload | null>(null);
   const [mobileTab, setMobileTab] = useState<"next" | "keep">("next");
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.pipeline(user), api.catalog(user)])
-      .then(([p, c]) => {
+    Promise.all([api.pipeline(user), api.catalog(user), api.cardReferences()])
+      .then(([p, c, refs]) => {
         setData(p);
         setCatalog(c);
+        setReferences(refs);
       })
       .catch((e) => flash("error", e.message))
       .finally(() => setLoading(false));
   };
   useEffect(load, [user, bump]);
 
-  const recordApplication = (c: any) => {
+  const recordApplication = (c: PipelineCard) => {
     const cat = catalog.find((x) => x.id === c.id);
     const opened = today();
     const minSpend = c.current_offer_min_spend ?? cat?.current_offer_min_spend ?? "";
@@ -61,9 +63,9 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
     setFormOpen(true);
   };
 
-  const onSubmit = async (payload: any) => {
+  const onSubmit = async (payload: ApiPayload) => {
     await api.createCard(payload);
-    flash("info", `${payload.product_name} recorded for ${user} — eligibility & pipeline recomputed.`);
+    flash("info", `${cardName(payload)} recorded for ${user} - eligibility & pipeline recomputed.`);
     setFormOpen(false);
     load();
   };
@@ -72,7 +74,14 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
   const f24 = data?.five_24;
   const next = data?.next_cards ?? [];
   const needsData = data?.needs_data ?? [];
+  const alternates = data?.alternate_strategies ?? [];
   const actions = data?.held_actions ?? [];
+  const referenceByKey = new Map(references.map((row) => [row.canonical_key, row]));
+  const applyUrlFor = (id: number) => {
+    const catalogRow = catalog.find((row) => row.id === id);
+    const reference = catalogRow?.canonical_key ? referenceByKey.get(catalogRow.canonical_key) : null;
+    return reference?.issuer_url || reference?.offer_url || catalogRow?.source_url || null;
+  };
 
   return (
     <div className="space-y-6">
@@ -96,13 +105,13 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
           className={`rounded-md px-3 py-1.5 text-sm font-medium ${mobileTab === "next" ? "bg-ink-600 text-cyan-accent" : "text-slate-400"}`}
           onClick={() => setMobileTab("next")}
         >
-          Open <span className="font-mono text-xs opacity-70">{next.length}</span>
+          Open <span className="text-xs font-semibold opacity-70">{next.length}</span>
         </button>
         <button
           className={`rounded-md px-3 py-1.5 text-sm font-medium ${mobileTab === "keep" ? "bg-ink-600 text-cyan-accent" : "text-slate-400"}`}
           onClick={() => setMobileTab("keep")}
         >
-          Manage <span className="font-mono text-xs opacity-70">{actions.length}</span>
+          Manage <span className="text-xs font-semibold opacity-70">{actions.length}</span>
         </button>
       </div>
 
@@ -113,104 +122,130 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
               <EmptyState title="No eligible cards" hint="Run refresh or wait for eligibility blocks to clear." />
             ) : (
               <div className="space-y-2">
-                {next.map((c: any) => (
-                  <NextRow key={c.id} card={c} onRecord={() => recordApplication(c)} />
+                {next.map((c) => (
+                  <NextRow
+                    key={c.id}
+                    card={c}
+                    applyUrl={applyUrlFor(c.id)}
+                    onRecord={() => recordApplication(c)}
+                  />
                 ))}
-              </div>
-            )}
-            {needsData.length > 0 && (
-              <div className="mt-4">
-                <MobileSection title="Needs Data" count={needsData.length}>
-                  <div className="space-y-2">
-                    {needsData.map((c: any) => (
-                      <NeedsDataRow key={c.id} card={c} />
-                    ))}
-                  </div>
-                </MobileSection>
               </div>
             )}
           </MobileSection>
         ) : (
-          <MobileSection title="Manage" count={actions.length}>
-            {actions.length === 0 ? (
-              <EmptyState title="No held-card actions" hint="Add held cards to get renewal, downgrade, and cancel guidance." />
-            ) : (
-              <div className="space-y-2">
-                {actions.map((a: any) => (
-                  <ActionRow key={a.id} action={a} />
-                ))}
-              </div>
+          <div className="space-y-4">
+            <MobileSection title="Manage" count={actions.length}>
+              {actions.length === 0 ? (
+                <EmptyState title="No held-card actions" hint="Add held cards to get renewal, downgrade, and cancel guidance." />
+              ) : (
+                <div className="space-y-2">
+                  {actions.map((a) => (
+                    <ActionRow key={a.id} action={a} />
+                  ))}
+                </div>
+              )}
+            </MobileSection>
+            {alternates.length > 0 && (
+              <MobileSection title="Ladder" count={alternates.length}>
+                <div className="space-y-2">
+                  {alternates.map((c) => (
+                    <NeedsDataRow key={`alt-${c.id}`} card={c} variant="ladder" />
+                  ))}
+                </div>
+              </MobileSection>
             )}
-          </MobileSection>
+          </div>
         )}
       </div>
 
       <div className="hidden gap-6 lg:grid lg:grid-cols-2">
         <div>
-          <SectionTitle title="Open Next" subtitle="Ordered apply queue. Record the application when you apply." />
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-slate-100">Open Next</h3>
+            <p className="mt-0.5 text-xs text-slate-500">Ordered apply queue. Record the application when you apply.</p>
+          </div>
           {next.length === 0 ? (
             <EmptyState title="No eligible cards" hint="Either the catalog is empty or nothing is currently eligible. Run discovery/refresh, or wait for blocks to clear." />
           ) : (
-            <div className="space-y-2">
-              {next.map((c: any) => (
-                <Card key={c.id} className="flex flex-col gap-3 sm:flex-row sm:items-start">
-                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ink-500 font-mono text-xs text-cyan-accent">
+            <div className="soft-scroll max-h-[66vh] space-y-2 pr-1">
+              {next.map((c) => (
+                <Card key={c.id} className="flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-start">
+                  <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ink-500 font-mono text-[11px] text-cyan-accent">
                     {c.rank}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-slate-100">{c.product_name}</span>
+                      <span className="text-sm font-medium text-slate-100">{cardName(c)}</span>
                       <StatusBadge status={c.status} />
+                      {c.is_exceptional && <RareBadge />}
                       {c.targeted_beats_public && (
-                        <span className="chip bg-pink-accent/15 text-pink-accent">targeted ▲</span>
+                        <span className="chip bg-pink-accent/15 text-pink-accent">targeted high</span>
                       )}
                     </div>
                     <div className="text-[11px] text-slate-500">
-                      {c.issuer} · {c.ownership}
-                      {c.currency ? ` · ${c.currency}` : ""}
+                      {c.issuer} - {c.ownership}
+                      {c.currency ? ` - ${c.currency}` : ""}
                     </div>
-                    <div className="mt-1 text-sm text-slate-400">{c.reason}</div>
+                    <div className="line-clamp-2 mt-1 text-xs leading-snug text-slate-400">{c.reason}</div>
                     <button
                       className="btn-success mt-2 px-2 py-1 text-xs"
                       onClick={() => recordApplication(c)}
                     >
-                      Record application →
+                      Record application
                     </button>
                   </div>
                   <div className="shrink-0 text-left sm:text-right">
-                    <div className="font-mono text-sm text-slate-200">{fmtMoney(c.offer_value)}</div>
+                    <div className="font-mono text-xs text-slate-200">{fmtMoney(c.offer_value)}</div>
                     <div className="text-[11px] text-slate-500">peak {c.peak_score}</div>
                   </div>
                 </Card>
               ))}
             </div>
           )}
-          {needsData.length > 0 && (
-            <div className="mt-6">
-              <SectionTitle title="Needs Data" subtitle="Cards excluded from the apply queue until offer/peak data is verified." />
-              <div className="space-y-2">
-                {needsData.map((c: any) => (
-                  <NeedsDataRow key={c.id} card={c} />
-                ))}
-              </div>
+          {(needsData.length > 0 || alternates.length > 0) && (
+            <div className="mt-6 grid gap-4 xl:grid-cols-2">
+              {needsData.length > 0 && (
+                <div>
+                  <SectionTitle title="Needs Data" subtitle="Excluded from apply queue until verified." />
+                  <div className="soft-scroll max-h-[32vh] space-y-2 pr-1">
+                    {needsData.map((c) => (
+                      <NeedsDataRow key={c.id} card={c} />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {alternates.length > 0 && (
+                <div>
+                  <SectionTitle title="Ladder Alternatives" subtitle="Same-family review before opening." />
+                  <div className="soft-scroll max-h-[32vh] space-y-2 pr-1">
+                    {alternates.map((c) => (
+                      <NeedsDataRow key={`alt-${c.id}`} card={c} variant="ladder" />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
         <div>
-          <SectionTitle title="Manage Existing" subtitle="Renew, downgrade, cancel, or requeue guidance." />
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-slate-100">Manage Existing</h3>
+            <p className="mt-0.5 text-xs text-slate-500">Renew, downgrade, cancel, or requeue guidance.</p>
+          </div>
           {actions.length === 0 ? (
             <EmptyState title="No held cards" hint="Add cards on the Dashboard to get retention/downgrade guidance." />
           ) : (
-            <div className="space-y-2">
-              {actions.map((a: any) => (
-                <Card key={a.id} className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="soft-scroll max-h-[66vh] space-y-2 pr-1">
+              {actions.map((a) => (
+                <Card key={a.id} className="flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <div className="font-medium text-slate-100">{a.product_name}</div>
+                    <div className="text-sm font-medium text-slate-100">{cardName(a)}</div>
                     <div className="text-[11px] text-slate-500">{a.issuer}</div>
-                    <div className="mt-1 text-sm text-slate-400">{a.reason}</div>
+                    <div className="line-clamp-2 mt-1 text-xs leading-snug text-slate-400">{a.reason}</div>
                   </div>
-                  <div className={`shrink-0 text-sm font-semibold uppercase tracking-wide ${ACTION_STYLE[a.action] ?? "text-slate-300"}`}>
+                  <div className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${ACTION_STYLE[a.action] ?? "text-slate-300"}`}>
                     {actionLabel(a.action)}
                   </div>
                 </Card>
@@ -237,7 +272,7 @@ function MobileSection({ title, count, children }: { title: string; count: numbe
     <div>
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">{title}</h3>
-        <span className="font-mono text-xs text-slate-500">{count}</span>
+        <span className="text-xs font-semibold text-slate-500">{count}</span>
       </div>
       {children}
     </div>
@@ -254,65 +289,121 @@ function actionLabel(action: string) {
   return (action ?? "").replace(/_/g, " ");
 }
 
-function NextRow({ card, onRecord }: { card: any; onRecord: () => void }) {
+function NextRow({ card, applyUrl, onRecord }: { card: PipelineCard; applyUrl?: string | null; onRecord: () => void }) {
+  const [open, setOpen] = useState(false);
   return (
     <div className="rounded-lg border border-ink-400/60 bg-ink-700/60 px-3 py-2">
-      <div className="flex items-start gap-2">
-        <div className="mt-0.5 w-6 shrink-0 text-center font-mono text-xs text-cyan-accent">{card.rank}</div>
+      <button className="flex w-full items-start gap-2 text-left" onClick={() => setOpen((value) => !value)}>
+        <div className="mt-0.5 w-6 shrink-0 text-center text-xs font-semibold text-cyan-accent">{card.rank}</div>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <div className="truncate text-sm font-medium text-slate-100">{card.product_name}</div>
+              <div className="truncate text-sm font-medium text-slate-100">{cardName(card)}</div>
               <div className="truncate text-[11px] text-slate-500">
                 {card.issuer} - {card.ownership}{card.currency ? ` - ${card.currency}` : ""}
               </div>
             </div>
-            <StatusBadge status={card.status} />
+            <div className="flex shrink-0 items-center gap-1">
+              {applyUrl ? (
+                <a href={applyUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                  <StatusBadge status={card.status} />
+                </a>
+              ) : (
+                <StatusBadge status={card.status} />
+              )}
+              {card.is_exceptional && <RareBadge />}
+              <span className={`text-lg text-slate-500 transition-transform ${open ? "rotate-90" : ""}`}>&rsaquo;</span>
+            </div>
           </div>
           {card.reason && <div className="line-clamp-1 mt-1 text-[11px] leading-tight text-slate-500">{shortText(card.reason, 72)}</div>}
           <div className="mt-1.5 flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-baseline gap-2">
-              <div className="font-mono text-sm text-slate-200">{fmtMoney(card.offer_value)}</div>
+              <div className="text-sm font-semibold text-slate-200">{fmtMoney(card.offer_value)}</div>
               <div className="text-[10px] text-slate-500">peak {card.peak_score}</div>
             </div>
-            <button className="btn-success px-2 py-0.5 text-xs" onClick={onRecord}>Record</button>
           </div>
         </div>
-      </div>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
+          <div>{card.reason}</div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span>Offer value {fmtMoney(card.offer_value)}</span>
+            <span>Peak score {card.peak_score}</span>
+            {card.current_offer_min_spend ? <span>Spend {fmtMoney(card.current_offer_min_spend)} / {card.current_offer_window_months ?? "?"} mo</span> : null}
+          </div>
+          <button className="btn-success h-8 px-3 text-xs" onClick={onRecord}>Record application</button>
+        </div>
+      )}
     </div>
   );
 }
 
-function ActionRow({ action }: { action: any }) {
+function ActionRow({ action }: { action: HeldAction }) {
+  const [open, setOpen] = useState(false);
   return (
     <div className="rounded-lg border border-ink-400/60 bg-ink-700/60 px-3 py-2">
-      <div className="flex items-start justify-between gap-3">
+      <button className="flex w-full items-start justify-between gap-3 text-left" onClick={() => setOpen((value) => !value)}>
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium text-slate-100">{action.product_name}</div>
+          <div className="truncate text-sm font-medium text-slate-100">{cardName(action)}</div>
           <div className="truncate text-[11px] text-slate-500">{action.issuer}</div>
         </div>
-        <div className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${ACTION_STYLE[action.action] ?? "text-slate-300"}`}>
-          {actionLabel(action.action)}
+        <div className="flex shrink-0 items-center gap-2">
+          <div className={`text-xs font-semibold uppercase tracking-wide ${ACTION_STYLE[action.action] ?? "text-slate-300"}`}>
+            {actionLabel(action.action)}
+          </div>
+          <span className={`text-lg text-slate-500 transition-transform ${open ? "rotate-90" : ""}`}>&rsaquo;</span>
         </div>
-      </div>
+      </button>
       {action.reason && <div className="line-clamp-2 mt-1 text-[11px] leading-tight text-slate-400">{shortText(action.reason)}</div>}
+      {open && (
+        <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
+          <div>{action.reason}</div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span>Annual fee {action.annual_fee ? fmtMoney(action.annual_fee) : "none"}</span>
+            <span>Renewal {action.renewal_date ?? "none"}</span>
+            {action.eligible_again_date ? <span>Eligible again {action.eligible_again_date}</span> : null}
+          </div>
+        </div>
+      )}
+      {open && action.ladder_alternatives?.length ? (
+        <div className="mt-2 space-y-1">
+          {action.ladder_alternatives.slice(0, 2).map((alt: LadderAlternative) => (
+            <div key={alt.id} className="rounded-md border border-cyan-accent/20 bg-cyan-accent/5 px-2 py-1 text-[11px] text-cyan-100">
+              Same-family review: {cardName(alt)} - {fmtMoney(alt.offer_value)}, peak {alt.peak_score}, {alt.status}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function NeedsDataRow({ card }: { card: any }) {
+function NeedsDataRow({ card, variant = "needs_data" }: { card: PipelineCard; variant?: "needs_data" | "ladder" }) {
+  const isLadder = variant === "ladder";
   return (
-    <div className="rounded-lg border border-amber-500/30 bg-amber-950/10 px-3 py-2">
+    <div
+      className={`rounded-lg border px-3 py-2 ${
+        isLadder
+          ? "pipeline-ladder-row border-violet-400/25 bg-violet-400/5"
+          : "pipeline-needs-data-row border-amber-500/30 bg-amber-950/10"
+      }`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium text-slate-100">{card.product_name}</div>
+          <div className="truncate text-sm font-medium text-slate-100">{cardName(card)}</div>
           <div className="truncate text-[11px] text-slate-500">
             {card.issuer} - {card.ownership}{card.currency ? ` - ${card.currency}` : ""}
           </div>
         </div>
-        <StatusBadge status={card.status} />
+        <div className="flex shrink-0 items-center gap-1">
+          <StatusBadge status={card.status} />
+          {card.is_exceptional && <RareBadge />}
+        </div>
       </div>
-      <div className="line-clamp-2 mt-1 text-[11px] leading-tight text-amber-100/80">{shortText(card.reason)}</div>
+      <div className={`line-clamp-2 mt-1 text-[11px] leading-tight ${isLadder ? "pipeline-ladder-reason text-slate-400" : "text-amber-100/80"}`}>
+        {shortText(card.reason)}
+      </div>
     </div>
   );
 }

@@ -1,11 +1,20 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, type CatalogHealthResponse, type ProposedChange, type RunStatus } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, Card, SectionTitle, Spinner } from "../components/ui";
+import { Banner, Card, SectionTitle, Spinner, cardName } from "../components/ui";
+
+function changeField(change: ProposedChange) {
+  return change.field_label || String(change.field || "").replace(/_/g, " ");
+}
+
+function changeSource(change: ProposedChange) {
+  return change.source_domain || change.source_url || "no source";
+}
 
 export function CardUniverse({ user, bump, flash }: { user: string; bump: number; flash: Flash }) {
-  const [status, setStatus] = useState<any>(null);
-  const [changes, setChanges] = useState<any[]>([]);
+  const [status, setStatus] = useState<RunStatus | null>(null);
+  const [changes, setChanges] = useState<ProposedChange[]>([]);
+  const [health, setHealth] = useState<CatalogHealthResponse | null>(null);
   const [discovered, setDiscovered] = useState<any[]>([]);
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [blacklist, setBlacklist] = useState<any[]>([]);
@@ -24,8 +33,9 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
       api.blacklist(),
       api.valuations(),
       api.sources(),
+      api.catalogHealth(),
     ])
-      .then(([st, ch, dc, wl, bl, vs, sr]) => {
+      .then(([st, ch, dc, wl, bl, vs, sr, healthResult]) => {
         setStatus(st);
         setChanges(ch);
         setDiscovered(dc);
@@ -33,6 +43,7 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
         setBlacklist(bl);
         setValuations(vs);
         setSources(sr);
+        setHealth(healthResult);
       })
       .catch((e) => flash("error", e.message))
       .finally(() => setLoading(false));
@@ -60,11 +71,11 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
 
   if (loading && !status) return <Spinner />;
   const llmOk = status?.llm_available;
-  const webOk = status?.web_search_enabled;
+  const healthRows = (health?.products ?? []).filter((row) => row.status !== "healthy").slice(0, 8);
 
   return (
     <div className="space-y-6">
-      <SectionTitle title="Card Universe / Review" subtitle="Run the engine, manage lists, and approve LLM-extracted changes." />
+      <SectionTitle title="Card Universe / Review" subtitle="Manage lists, catalog health, and approve LLM-extracted changes." />
 
       {!llmOk && (
         <Banner kind="warn">
@@ -72,35 +83,75 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
         </Banner>
       )}
 
-      {/* Run actions */}
+      {/* Catalog health */}
       <Card>
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <div className="min-w-0">
-            <div className="text-sm font-medium text-slate-100">Ingestion engine</div>
-            <div className="text-[11px] text-slate-500">
-              Normal refresh uses cached/static pages and compact extraction. Deep refresh adds capped web fallback for unresolved cards.
-            </div>
+            <div className="text-sm font-medium text-slate-100">Catalog health</div>
+            <div className="text-[11px] text-slate-500">Held cards and high-impact catalog gaps first.</div>
           </div>
-          <div className="flex flex-wrap gap-2 sm:ml-auto">
-            <button className="btn-ghost flex-1 justify-center sm:flex-none" disabled={!llmOk || running} onClick={() => run(() => api.runDiscover(), "Discovery")}>
-              Discover cards
+          {health && (
+            <div className="ml-auto flex flex-wrap gap-1 text-[10px] text-slate-400">
+              <span className="chip bg-ink-500">needs data {health.summary.needs_data}</span>
+              <span className="chip bg-ink-500">review {health.summary.needs_review}</span>
+              <span className="chip bg-ink-500">held gaps {health.summary.held_needs_data}</span>
+            </div>
+          )}
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+            <button
+              className="btn-ghost flex-1 justify-center px-2 py-1 text-xs sm:flex-none"
+              disabled={running}
+              onClick={() => run(() => api.cleanupProposedChanges(), "Review cleanup")}
+            >
+              Clean review queue
             </button>
             <button
-              className="btn-primary flex-1 justify-center sm:flex-none"
-              disabled={!llmOk || running}
-              onClick={() => run(() => api.runRefresh({ limit: null, only_stale: true, include_incomplete: true, use_web_search: false, refresh_valuations: false }), "Refresh")}
+              className="btn-ghost flex-1 justify-center px-2 py-1 text-xs sm:flex-none"
+              disabled={running}
+              onClick={() => run(() => api.mergeCatalogDuplicates(), "Duplicate merge")}
             >
-              Refresh offers
-            </button>
-            <button
-              className="btn-ghost flex-1 justify-center sm:flex-none"
-              disabled={!llmOk || !webOk || running}
-              onClick={() => run(() => api.runRefresh({ limit: null, only_stale: true, include_incomplete: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: false }), "Deep refresh")}
-            >
-              Deep refresh
+              Merge duplicates
             </button>
           </div>
         </div>
+        {healthRows.length === 0 ? (
+          <div className="text-sm text-slate-500">No catalog health issues found.</div>
+        ) : (
+          <div className="soft-scroll max-h-[260px] space-y-2 pr-1">
+            {healthRows.map((row) => (
+              <div key={row.product_id} className="rounded-md border border-ink-400/60 bg-ink-900 px-3 py-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-slate-100">{row.display_name}</div>
+                    <div className="mt-0.5 flex flex-wrap gap-1 text-[10px] text-slate-500">
+                      <span>{row.status.replace(/_/g, " ")}</span>
+                      <span>{row.health_score}/100</span>
+                      {row.held_by.length > 0 && <span>held by {row.held_by.join(", ")}</span>}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right text-[11px] text-cyan-accent">{row.next_action}</div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {row.issues.slice(0, 4).map((issue) => (
+                    <span
+                      key={issue.code}
+                      className={`rounded-md border px-1.5 py-0.5 text-[10px] ${
+                        issue.severity === "high"
+                          ? "border-rose-300/30 bg-rose-300/10 text-rose-100"
+                          : issue.severity === "medium"
+                            ? "border-amber-300/30 bg-amber-300/10 text-amber-100"
+                            : "border-ink-400 bg-ink-800 text-slate-400"
+                      }`}
+                    >
+                      {issue.label}
+                    </span>
+                  ))}
+                  {row.issues.length > 4 && <span className="text-[10px] text-slate-500">+{row.issues.length - 4} more</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       {/* Proposed changes queue */}
@@ -110,22 +161,28 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
           <Card className="text-sm text-slate-500">No pending changes.</Card>
         ) : (
           <>
-          <div className="space-y-2 md:hidden">
+          <div className="soft-scroll max-h-[58vh] space-y-2 pr-1 md:hidden">
             {changes.map((c) => (
               <Card key={c.id} className="space-y-2">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="font-medium text-slate-100">{c.product}</div>
-                    <div className="font-mono text-[11px] text-slate-500">{c.field}</div>
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{changeField(c)}</div>
                   </div>
                   <div className="shrink-0 text-xs text-slate-400">{c.confidence != null ? c.confidence.toFixed(2) : "-"}</div>
                 </div>
-                <div className="rounded-md border border-ink-400/50 bg-ink-900 p-2 font-mono text-xs">
-                  <div className="break-words text-slate-500">{String(c.old_value ?? "-")}</div>
-                  <div className="my-1 text-slate-600">to</div>
-                  <div className="break-words text-cyan-accent">{String(c.new_value ?? "-")}</div>
+                <div className="rounded-md border border-ink-400/50 bg-ink-900 p-2 text-xs">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-600">Current</div>
+                  <div className="line-clamp-2 break-words text-slate-400">{c.old_preview ?? "-"}</div>
+                  <div className="mt-2 text-[10px] uppercase tracking-wide text-slate-600">Proposed</div>
+                  <div className="line-clamp-3 break-words font-medium text-cyan-accent">{c.new_preview ?? "-"}</div>
                 </div>
-                <div className="truncate text-[11px] text-slate-500" title={c.source_url}>{c.source_url}</div>
+                {c.review_note && (
+                  <div className="rounded-md border border-amber-300/30 bg-amber-300/5 px-2 py-1 text-[11px] text-amber-100">
+                    {c.review_note}
+                  </div>
+                )}
+                <div className="truncate text-[11px] text-slate-500" title={c.source_url}>{changeSource(c)}</div>
                 <div className="flex justify-end gap-3">
                   <button className="text-xs text-emerald-300 hover:underline" onClick={() => decide(c.id, "approved")}>
                     approve
@@ -137,13 +194,13 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
               </Card>
             ))}
           </div>
-          <Card className="hidden overflow-x-auto p-0 md:block">
+          <Card className="soft-scroll hidden max-h-[60vh] overflow-x-auto p-0 md:block">
             <table className="w-full">
               <thead>
                 <tr>
                   <th className="th">Product</th>
                   <th className="th">Field</th>
-                  <th className="th">Old → New</th>
+                  <th className="th">Current / Proposed</th>
                   <th className="th">Conf.</th>
                   <th className="th">Source</th>
                   <th className="th"></th>
@@ -153,15 +210,17 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
                 {changes.map((c) => (
                   <tr key={c.id}>
                     <td className="td text-slate-200">{c.product}</td>
-                    <td className="td font-mono text-xs text-slate-400">{c.field}</td>
-                    <td className="td font-mono text-xs">
-                      <span className="text-slate-500">{c.old_value}</span>
-                      <span className="mx-1 text-slate-600">→</span>
-                      <span className="text-cyan-accent">{c.new_value}</span>
+                    <td className="td text-xs font-medium uppercase tracking-wide text-slate-400">{changeField(c)}</td>
+                    <td className="td text-xs">
+                      <div className="max-w-[460px]">
+                        <div className="line-clamp-1 text-slate-500">Current: {c.old_preview ?? "-"}</div>
+                        <div className="line-clamp-2 font-medium text-cyan-accent">Proposed: {c.new_preview ?? "-"}</div>
+                        {c.review_note && <div className="mt-1 line-clamp-2 text-[11px] text-amber-100">{c.review_note}</div>}
+                      </div>
                     </td>
-                    <td className="td text-slate-400">{c.confidence != null ? c.confidence.toFixed(2) : "—"}</td>
+                    <td className="td text-slate-400">{c.confidence != null ? c.confidence.toFixed(2) : "-"}</td>
                     <td className="td max-w-[160px] truncate text-[11px] text-slate-500" title={c.source_url}>
-                      {c.source_url}
+                      {changeSource(c)}
                     </td>
                     <td className="td whitespace-nowrap text-right">
                       <button className="text-xs text-emerald-300 hover:underline" onClick={() => decide(c.id, "approved")}>
@@ -184,10 +243,10 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
       {discovered.length > 0 && (
         <div>
           <SectionTitle title={`Newly discovered (${discovered.length})`} subtitle="Quick review pass — does not block the catalog." />
-          <Card className="flex flex-wrap gap-2">
+          <Card className="soft-scroll flex max-h-[220px] flex-wrap gap-2 pr-1">
             {discovered.map((d) => (
               <span key={d.id} className="chip bg-ink-500 text-slate-300">
-                {d.issuer} {d.product_name}
+                {d.issuer} {cardName(d)}
                 <button
                   className="ml-2 text-cyan-accent hover:underline"
                   onClick={async () => {
@@ -237,12 +296,12 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
           <Card className="text-sm text-slate-500">No valuations yet — Refresh offers backfills them, or add manually below.</Card>
         ) : (
           <>
-          <div className="space-y-2 md:hidden">
+          <div className="soft-scroll max-h-[420px] space-y-2 pr-1 md:hidden">
             {valuations.map((v) => (
               <ValuationCard key={v.id} v={v} onSaved={load} flash={flash} />
             ))}
           </div>
-          <Card className="hidden overflow-x-auto p-0 md:block">
+          <Card className="soft-scroll hidden max-h-[460px] overflow-x-auto p-0 md:block">
             <table className="w-full">
               <thead>
                 <tr>
@@ -270,7 +329,7 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
         <Card>
           <div className="text-sm font-medium text-slate-100 mb-1">Sources</div>
           <div className="text-[11px] text-slate-500 mb-2">Discovery scope: {sources.discovery_issuers?.join(", ")}</div>
-          <div className="space-y-1">
+          <div className="soft-scroll max-h-[360px] space-y-1 pr-1">
             {(sources.records ?? []).map((s: any) => (
               <SourceRow key={s.id} source={s} onSaved={load} flash={flash} />
             ))}
@@ -334,11 +393,11 @@ function ListManager({
             Add
           </button>
         </div>
-        <ul className="divide-y divide-ink-500/40">
+        <ul className="soft-scroll max-h-[260px] divide-y divide-ink-500/40 pr-1">
           {items.map((it) => (
             <li key={it.id} className="flex items-start justify-between gap-3 py-1.5 text-sm">
               <span className="min-w-0 break-words text-slate-200">
-                {it.issuer} {it.product_name}
+                {it.issuer} {cardName(it)}
                 {it.priority && <span className="ml-2 chip bg-cyan-accent/15 text-cyan-accent">priority</span>}
                 {it.reason && <span className="ml-2 text-[11px] text-slate-500">({it.reason})</span>}
               </span>

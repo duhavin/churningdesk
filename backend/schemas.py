@@ -146,6 +146,20 @@ class CardProductUpdate(BaseModel):
     notes: str | None = None
 
 
+class CardReferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    aliases: list[str] | None = None
+    search_terms: list[str] | None = None
+    issuer_url: str | None = None
+    offer_url: str | None = None
+    history_url: str | None = None
+    benefits_url: str | None = None
+    trusted_source_urls: list[str] | None = None
+    learned_source_urls: list[str] | None = None
+    active: bool | None = None
+
+
 # --- Watchlist / blacklist --------------------------------------------------
 class WatchlistCreate(BaseModel):
     issuer: str
@@ -171,6 +185,20 @@ class ValuationUpsert(BaseModel):
 # --- Profiles ---------------------------------------------------------------
 class ProfileUpsert(BaseModel):
     point_balances: dict[str, float] | None = None
+    notes: str | None = None
+
+
+class BenefitUsageUpsert(BaseModel):
+    held_card_id: int
+    benefit_key: str
+    benefit_name: str
+    period_key: str
+    period_start: dt.date | None = None
+    period_end: dt.date | None = None
+    amount_available: float | None = None
+    amount_used: float | None = None
+    suppressed: bool | None = None
+    suppress_all: bool = False
     notes: str | None = None
 
 
@@ -210,6 +238,59 @@ class SourceUpdate(BaseModel):
     priority: int | None = Field(default=None, ge=1, le=5)
 
 
+# --- Redemption -------------------------------------------------------------
+class TargetRedemptionCreate(BaseModel):
+    user: str = "Household"
+    name: str
+    origin: str | None = None
+    destination: str | None = None
+    region: str | None = None
+    cabin_or_tier: str | None = None
+    preferred_programs: str | None = None
+    est_cost_points: int | None = None
+    target_value_cash: float | None = None
+    buy_points_cpp: float | None = None
+    travel_start_date: dt.date | None = None
+    travel_end_date: dt.date | None = None
+    passenger_count: int | None = Field(default=None, ge=1, le=9)
+    frequency: str | None = None
+    priority: int | None = None
+    notes: str | None = None
+
+
+class TargetRedemptionUpdate(BaseModel):
+    user: str | None = None
+    name: str | None = None
+    origin: str | None = None
+    destination: str | None = None
+    region: str | None = None
+    cabin_or_tier: str | None = None
+    preferred_programs: str | None = None
+    est_cost_points: int | None = None
+    target_value_cash: float | None = None
+    buy_points_cpp: float | None = None
+    travel_start_date: dt.date | None = None
+    travel_end_date: dt.date | None = None
+    passenger_count: int | None = Field(default=None, ge=1, le=9)
+    frequency: str | None = None
+    priority: int | None = None
+    notes: str | None = None
+
+
+class TransferPartnerCreate(BaseModel):
+    from_currency: str
+    to_program: str
+    ratio: str | None = "1:1"
+    source_url: str | None = None
+
+
+class TransferPartnerUpdate(BaseModel):
+    from_currency: str | None = None
+    to_program: str | None = None
+    ratio: str | None = None
+    source_url: str | None = None
+
+
 # --- Proposed changes -------------------------------------------------------
 class ProposedDecision(BaseModel):
     status: str = Field(pattern="^(approved|rejected)$")
@@ -236,6 +317,7 @@ class RefreshRequest(BaseModel):
     peak_backfill: bool = False
     refresh_valuations: bool = False
     valuations_only: bool = False
+    use_rendered_fallback: bool = False
     background: bool = False
     # Backward-compatible flag used by the existing frontend.
     only_stale: bool | None = True

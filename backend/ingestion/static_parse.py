@@ -64,6 +64,40 @@ OFFER_KEYWORDS = (
     "miles",
     "cash back",
     "statement credit",
+    "dining",
+    "restaurant",
+    "restaurants",
+    "grocery",
+    "groceries",
+    "supermarket",
+    "travel",
+    "airfare",
+    "flights",
+    "hotel",
+    "hotels",
+    "gas",
+    "lounge",
+    "priority pass",
+    "global entry",
+    "tsa precheck",
+    "checked bag",
+    "companion",
+    "free night",
+    "elite status",
+    "uber",
+    "uber cash",
+    "doordash",
+    "instacart",
+    "resy",
+    "clear",
+    "travel credit",
+    "dining credit",
+    "airline fee credit",
+    "entertainment credit",
+    "anniversary bonus",
+    "anniversary miles",
+    "anniversary points",
+    "cardmember anniversary",
     "eligible",
     "eligibility",
     "not available",
@@ -71,6 +105,20 @@ OFFER_KEYWORDS = (
     "expiration",
     "limited time",
     "business",
+)
+
+PEAK_TERMS = (
+    "highest ever",
+    "highest-ever",
+    "all time high",
+    "all-time high",
+    "all time best",
+    "all-time best",
+    "best ever",
+    "best-ever",
+    "record high",
+    "peak offer",
+    "historical high",
 )
 
 
@@ -327,6 +375,8 @@ def snippets_for_card(
             score += 3
         if assume_product_page and _interesting(line):
             score += 4
+        if re.search(r"\d+(?:\.\d+)?\s+(?:x|points?|miles?|%)\b.{0,90}\b(?:per\s+\$?1|per\s+dollar|cash back|on|at|for|in)\b", line, re.I):
+            score += 8
         if score >= 4:
             scored.append((score, idx))
 
@@ -348,6 +398,7 @@ def snippets_for_card(
 
 def _sentences(snippets: list[str]) -> list[str]:
     text = " ".join(snippets)
+    text = re.sub(r"\bU\.S\.", "US", text)
     chunks = re.split(r"(?<=[.!?])\s+| / |\n+", text)
     return [_compact(c, 500) for c in chunks if c and len(c.strip()) > 8]
 
@@ -376,6 +427,8 @@ def _extract_bonus(sentences: list[str], evidence: dict[str, list[str]]) -> tupl
         low = sentence.lower()
         if not any(k in low for k in ("welcome", "bonus", "earn", "offer", "cash back", "statement credit")):
             continue
+        if any(term in low for term in PEAK_TERMS):
+            continue
         cash = re.search(r"\$([\d,]+(?:\.\d+)?)\s*(?:cash back|statement credit|bonus|welcome)", sentence, re.I)
         if cash:
             _field(evidence, "bonus_amount", sentence)
@@ -403,6 +456,23 @@ def _extract_spend(sentences: list[str], evidence: dict[str, list[str]]) -> tupl
                 _field(evidence, "spend_requirement", sentence)
                 _field(evidence, "spend_window_months", sentence)
                 return _number(match.group(1)), _window_months(match.group(2), match.group(3))
+    return None, None
+
+
+def _extract_peak(sentences: list[str], evidence: dict[str, list[str]]) -> tuple[float | None, str | None]:
+    point_units = r"points?|miles?|bonus miles?|bonus points?|skymiles|aadvantage miles|avios"
+    for sentence in sentences:
+        low = sentence.lower()
+        if not any(term in low for term in PEAK_TERMS):
+            continue
+        if any(term in low for term in ("targeted", "incognito", "prequalified", "phone offer", "mail offer", "as high as")):
+            continue
+        points = re.search(rf"(\d{{1,3}}(?:,\d{{3}})+|\d{{4,6}})\s+({point_units})", sentence, re.I)
+        if points:
+            _field(evidence, "peak_bonus_amount", sentence)
+            _field(evidence, "peak_bonus_unit", sentence)
+            _field(evidence, "peak_offer_source", sentence)
+            return _number(points.group(1)), points.group(2).lower()
     return None, None
 
 
@@ -445,40 +515,52 @@ _CATEGORY_ALIASES = {
     "groceries": ("grocery", "groceries", "supermarket", "supermarkets"),
     "travel": ("travel", "airfare", "flights", "hotel", "hotels", "rental car"),
     "gas": ("gas", "gas station", "gas stations", "fuel"),
-    "everyday": ("everyday", "all purchases", "everything else", "other purchases"),
+    "everyday": ("everyday", "every purchase", "all purchases", "all other", "everything else", "other purchases"),
 }
 
 
 def _category_for(text: str) -> str | None:
+    categories = _categories_for(text)
+    return categories[0] if categories else None
+
+
+def _categories_for(text: str) -> list[str]:
     low = text.lower()
+    categories: list[str] = []
     for category, aliases in _CATEGORY_ALIASES.items():
         if any(alias in low for alias in aliases):
-            return category
-    return None
+            categories.append(category)
+    return categories
 
 
 def _extract_earn_multipliers(sentences: list[str], evidence: dict[str, list[str]]) -> dict[str, float] | None:
     out: dict[str, float] = {}
+    category_tail = r"([^;|]{0,120}?)(?=\s+\d+(?:\.\d+)?\s*(?:x|points?|miles?|%)\b|[;|]|$)"
+
+    def record(category_text: str, raw_value: str, sentence: str) -> None:
+        categories = _categories_for(category_text)
+        if not categories:
+            return
+        value = float(raw_value)
+        for category in categories:
+            if value > out.get(category, 0):
+                out[category] = value
+                _field(evidence, "earn_multipliers", sentence)
+
     for sentence in sentences:
         low = sentence.lower()
-        if not any(k in low for k in ("x", "points", "miles", "cash back", "earn")):
+        if not any(k in low for k in ("x", "points", "miles", "cash back", "earn", "% back")):
             continue
-        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*x\s+([^.;|]{0,90})", sentence, re.I):
-            category = _category_for(match.group(2))
-            if not category:
-                continue
-            value = float(match.group(1))
-            if value > out.get(category, 0):
-                out[category] = value
-                _field(evidence, "earn_multipliers", sentence)
-        for match in re.finditer(r"(\d+(?:\.\d+)?)%\s+cash back\s+([^.;|]{0,90})", sentence, re.I):
-            category = _category_for(match.group(2))
-            if not category:
-                continue
-            value = float(match.group(1))
-            if value > out.get(category, 0):
-                out[category] = value
-                _field(evidence, "earn_multipliers", sentence)
+        for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*x\s*(?:points?|miles?)?(?:\s+(?:on|at|for|in))?\s+{category_tail}", sentence, re.I):
+            record(match.group(2), match.group(1), sentence)
+        for match in re.finditer(rf"earn\s+(\d+(?:\.\d+)?)\s*(?:x|points?|miles?).{{0,80}}?\b(?:on|at|for|in)\s+{category_tail}", sentence, re.I):
+            record(match.group(2), match.group(1), sentence)
+        for match in re.finditer(rf"(\d+(?:\.\d+)?)\s+(?:points?|miles?)\s+per\s+\$?1.{{0,80}}?\b(?:on|at|for|in)\s+{category_tail}", sentence, re.I):
+            record(match.group(2), match.group(1), sentence)
+        for match in re.finditer(rf"(\d+(?:\.\d+)?)\s+(?:points?|miles?)\s+per\s+dollar.{{0,80}}?\b(?:on|at|for|in)\s+{category_tail}", sentence, re.I):
+            record(match.group(2), match.group(1), sentence)
+        for match in re.finditer(rf"(\d+(?:\.\d+)?)%\s+(?:cash back|back).{{0,60}}?\b(?:on|at|for|in)\s+{category_tail}", sentence, re.I):
+            record(match.group(2), match.group(1), sentence)
     return out or None
 
 
@@ -493,16 +575,41 @@ def _extract_benefits(sentences: list[str], evidence: dict[str, list[str]]) -> l
     benefit_terms = (
         "credit",
         "lounge",
+        "airport lounge",
         "priority pass",
         "global entry",
         "tsa precheck",
+        "tsa pre",
+        "clear",
         "checked bag",
+        "free checked bag",
         "companion",
+        "companion pass",
+        "free night",
         "anniversary",
         "elite status",
+        "priority boarding",
         "cell phone",
         "travel protection",
         "purchase protection",
+        "trip delay",
+        "trip cancellation",
+        "rental car",
+        "uber",
+        "uber cash",
+        "doordash",
+        "instacart",
+        "resy",
+        "travel credit",
+        "dining credit",
+        "airline fee credit",
+        "entertainment credit",
+        "anniversary bonus",
+        "anniversary miles",
+        "anniversary points",
+        "cardmember anniversary",
+        "resort credit",
+        "hotel credit",
     )
     for sentence in sentences:
         low = sentence.lower()
@@ -556,6 +663,7 @@ def deterministic_offer_row(
     sentences = _sentences(snippets)
     bonus_amount, bonus_unit = _extract_bonus(sentences, evidence)
     spend_requirement, spend_window_months = _extract_spend(sentences, evidence)
+    peak_bonus_amount, peak_bonus_unit = _extract_peak(sentences, evidence)
     annual_fee = _extract_annual_fee(sentences, evidence)
     offer_expiration = _extract_expiration(sentences, evidence)
     eligibility_language = _extract_eligibility(sentences, evidence)
@@ -565,8 +673,26 @@ def deterministic_offer_row(
 
     joined_low = " ".join(sentences).lower()
     is_targeted = any(k in joined_low for k in ("targeted", "invitation only", "selected to apply", "pre-selected"))
-    is_affiliate = any(k in joined_low for k in ("affiliate", "referral"))
-    is_expired = any(k in joined_low for k in ("expired", "no longer available", "ended"))
+    affiliate_terms = (
+        "affiliate link",
+        "affiliate links",
+        "affiliate commission",
+        "we may earn",
+        "referral link",
+        "referral links",
+    )
+    is_affiliate = not assume_product_page and any(k in joined_low for k in affiliate_terms)
+    is_expired = any(
+        k in joined_low
+        for k in (
+            "offer expired",
+            "expired offer",
+            "offer has ended",
+            "offer ended",
+            "no longer available",
+            "no longer accepting applications",
+        )
+    )
     is_business = (ownership or "").lower() == "business" or "business" in product_name.lower()
     product_found = _product_found(snippets, issuer, product_name, assume_product_page)
 
@@ -590,9 +716,18 @@ def deterministic_offer_row(
         confidence += 0.12
     if annual_fee is not None:
         confidence += 0.08
+    has_supplemental_facts = bool(earn_multipliers or card_benefits or downgrade_paths)
+    if earn_multipliers:
+        confidence += 0.12
+    if card_benefits:
+        confidence += 0.1
+    if downgrade_paths:
+        confidence += 0.04
     if source_priority(page, issuer, assume_product_page) == 1:
         confidence += 0.08
-    if offer_status != "public":
+        if assume_product_page and has_supplemental_facts:
+            confidence += 0.12
+    if offer_status != "public" and not (earn_multipliers or card_benefits or downgrade_paths):
         confidence -= 0.1
     confidence = max(0.0, min(0.92, confidence))
 
@@ -617,6 +752,9 @@ def deterministic_offer_row(
         bonus_unit=bonus_unit,
         spend_requirement=spend_requirement,
         spend_window_months=spend_window_months,
+        peak_bonus_amount=peak_bonus_amount,
+        peak_bonus_unit=peak_bonus_unit,
+        peak_offer_source=page.final_url or page.url if peak_bonus_amount is not None else None,
         annual_fee=annual_fee,
         earn_multipliers=earn_multipliers,
         best_category_uses=_best_category_uses(earn_multipliers),

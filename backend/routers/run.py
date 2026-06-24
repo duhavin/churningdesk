@@ -11,12 +11,14 @@ from threading import Lock, Thread
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config, schemas
+from .. import config, models, schemas
 from ..db import SessionLocal, get_db
-from ..ingestion import discover, schedule
+from ..ingestion import discover, rendered_fetch, schedule
 from ..ingestion.extract import IngestionUnavailable
+from ..product_identity import product_variant_key
 
 router = APIRouter(prefix="/api/run", tags=["run"])
 
@@ -53,8 +55,35 @@ def _update_refresh_job(values: dict[str, Any]) -> None:
         _refresh_job.update(values)
 
 
-def _refresh_kwargs(payload: schemas.RefreshRequest) -> dict[str, Any]:
+def _held_priority_refs(db: Session) -> dict[str, list]:
+    """Private planner step: identify public product refs that deserve priority.
+
+    The ingestion scheduler receives only product IDs/identity keys/variant
+    keys, never HeldCard rows or private card fields.
+    """
+    held = db.scalars(
+        select(models.HeldCard).where(models.HeldCard.status != "Closed")
+    ).all()
+    ids = sorted({card.product_id for card in held if card.product_id})
+    keys = sorted({
+        ((card.issuer or "").strip().lower(), (card.product_name or "").strip().lower())
+        for card in held
+    })
+    variants = sorted({
+        variant
+        for card in held
+        for variant in [product_variant_key(card.issuer, card.product_name)]
+        if variant is not None
+    })
     return {
+        "priority_product_ids": ids,
+        "priority_product_keys": keys,
+        "priority_product_variants": variants,
+    }
+
+
+def _refresh_kwargs(payload: schemas.RefreshRequest, db: Session) -> dict[str, Any]:
+    kwargs = {
         "issuer": payload.issuer,
         "limit": payload.limit,
         "only_stale": payload.only_stale,
@@ -71,7 +100,11 @@ def _refresh_kwargs(payload: schemas.RefreshRequest) -> dict[str, Any]:
         "peak_backfill": payload.peak_backfill,
         "refresh_valuations": payload.refresh_valuations,
         "valuations_only": payload.valuations_only,
+        "use_rendered_fallback": payload.use_rendered_fallback,
     }
+    if not payload.valuations_only:
+        kwargs.update(_held_priority_refs(db))
+    return kwargs
 
 
 def _refresh_worker(payload: schemas.RefreshRequest) -> None:
@@ -100,7 +133,7 @@ def _refresh_worker(payload: schemas.RefreshRequest) -> None:
 
         result = schedule.run_refresh(
             db,
-            **_refresh_kwargs(payload),
+            **_refresh_kwargs(payload, db),
             progress_callback=progress,
         )
         _update_refresh_job(
@@ -141,8 +174,10 @@ def run_status():
         "model": config.ANTHROPIC_MODEL if config.llm_available() else None,
         "search_model": config.ANTHROPIC_SEARCH_MODEL if config.llm_available() else None,
         "web_search_enabled": config.WEB_SEARCH_ENABLED,
+        "crawl4ai_enabled": config.CRAWL4AI_ENABLED,
+        "crawl4ai_available": rendered_fetch.available() if config.CRAWL4AI_ENABLED else False,
         "crypto_available": config.crypto_available(),
-        "ingestion_mode": "static_http_cache_parse_strict_rows_web_research_fallback",
+        "ingestion_mode": "static_http_cache_parse_rendered_fallback_research_resolver_web_fallback",
     }
 
 
@@ -164,7 +199,7 @@ def run_refresh(payload: schemas.RefreshRequest, db: Session = Depends(get_db)):
         return {"status": "started", "job": _job_snapshot()}
 
     try:
-        return schedule.run_refresh(db, **_refresh_kwargs(payload))
+        return schedule.run_refresh(db, **_refresh_kwargs(payload, db))
     except IngestionUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

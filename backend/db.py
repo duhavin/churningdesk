@@ -63,6 +63,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "downgrade_paths": "JSON",
         "updated_at": "DATETIME",
         "last_web_search_at": "DATETIME",
+        "last_supplemental_search_at": "DATETIME",
     },
     "source_config": {
         "product_id": "INTEGER",
@@ -76,6 +77,24 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     },
     "manual_targeted_offer": {
         "expires_at": "DATE",
+    },
+    "target_redemption": {
+        "origin": "VARCHAR(20)",
+        "destination": "VARCHAR(80)",
+        "travel_start_date": "DATE",
+        "travel_end_date": "DATE",
+        "passenger_count": "INTEGER",
+        "target_value_cash": "FLOAT",
+        "buy_points_cpp": "FLOAT",
+    },
+    "proposed_change": {
+        "reason_code": "VARCHAR(80)",
+        "review_note": "TEXT",
+        "risk_level": "VARCHAR(20)",
+        "quality_score": "FLOAT",
+    },
+    "benefit_usage": {
+        "suppressed": "BOOLEAN",
     },
 }
 
@@ -151,3 +170,10 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _run_additive_migrations()
+    from .card_references import seed_card_references
+
+    db = SessionLocal()
+    try:
+        seed_card_references(db)
+    finally:
+        db.close()

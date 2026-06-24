@@ -18,7 +18,12 @@ from sqlalchemy.orm import Session
 
 from .. import config, models
 from ..logic.catalog import blacklisted_keys
-from ..product_identity import derive_product_family
+from ..product_identity import (
+    derive_product_family,
+    product_variant_key,
+    reward_currency_for_product,
+    reward_tag_for_currency,
+)
 from . import extract, fetch
 from .extract import IngestionUnavailable
 
@@ -110,6 +115,15 @@ def _existing_keys(db: Session) -> set[tuple[str, str]]:
     return {
         ((p.issuer or "").strip().lower(), _product_key(p.product_name or ""))
         for p in db.scalars(select(models.CardProduct)).all()
+    }
+
+
+def _existing_variants(db: Session) -> set[tuple[str, str]]:
+    return {
+        variant
+        for p in db.scalars(select(models.CardProduct)).all()
+        for variant in [product_variant_key(p.issuer, p.product_name)]
+        if variant is not None
     }
 
 
@@ -222,44 +236,8 @@ def _infer_ownership(text: str) -> str:
 
 
 def _infer_rewards(product_name: str, issuer: str) -> tuple[str | None, str | None]:
-    low = product_name.lower()
-    if issuer == "Chase" and any(k in low for k in ("sapphire", "ink", "freedom")):
-        return "Ultimate Rewards", "transferable"
-    if issuer == "American Express" and any(k in low for k in ("platinum", "gold", "green", "everyday", "blue business")):
-        return "Membership Rewards", "transferable"
-    if issuer == "Capital One" and "venture" in low:
-        return "Capital One Miles", "transferable"
-    if issuer == "Citi" and any(k in low for k in ("strata", "premier", "prestige")):
-        return "ThankYou Points", "transferable"
-
-    hotels = {
-        "Marriott": ("marriott", "bonvoy"),
-        "Hilton": ("hilton", "honors"),
-        "Hyatt": ("hyatt", "world of hyatt"),
-        "IHG": ("ihg",),
-        "Wyndham": ("wyndham",),
-        "Choice": ("choice",),
-    }
-    for program, terms in hotels.items():
-        if any(term in low for term in terms):
-            return program, "hotel_cobrand"
-
-    airlines = {
-        "United": ("united", "mileageplus"),
-        "Delta": ("delta", "skymiles"),
-        "American Airlines": ("american airlines", "aadvantage"),
-        "Alaska Airlines": ("alaska",),
-        "Southwest": ("southwest", "rapid rewards"),
-        "JetBlue": ("jetblue", "trueblue"),
-        "Hawaiian Airlines": ("hawaiian",),
-    }
-    for program, terms in airlines.items():
-        if any(term in low for term in terms):
-            return program, "airline_cobrand"
-
-    if any(k in low for k in ("cash", "savor")):
-        return "cash back", None
-    return None, None
+    currency = reward_currency_for_product(issuer, product_name)
+    return currency, reward_tag_for_currency(currency)
 
 
 def _candidate_from_title(
@@ -298,7 +276,10 @@ def _candidate_from_title(
 def _dedupe(candidates: list[DiscoveryCandidate]) -> list[DiscoveryCandidate]:
     out: dict[tuple[str, str], DiscoveryCandidate] = {}
     for candidate in candidates:
-        key = (candidate.issuer.strip().lower(), _product_key(candidate.product_name))
+        key = product_variant_key(candidate.issuer, candidate.product_name) or (
+            candidate.issuer.strip().lower(),
+            _product_key(candidate.product_name),
+        )
         old = out.get(key)
         if not old or candidate.confidence > old.confidence:
             out[key] = candidate
@@ -509,6 +490,7 @@ def run_discovery(db: Session, issuers: list[str] | None = None) -> dict:
         for issuer, product_name in blacklisted_keys(db)
     }
     existing = _existing_keys(db)
+    existing_variants = _existing_variants(db)
 
     added: list[dict] = []
     skipped_blacklist = 0
@@ -517,17 +499,19 @@ def run_discovery(db: Session, issuers: list[str] | None = None) -> dict:
         if key in blacklist:
             skipped_blacklist += 1
             continue
-        if key in existing:
+        variant = product_variant_key(candidate.issuer, candidate.product_name)
+        if key in existing or (variant is not None and variant in existing_variants):
             continue
+        currency = candidate.currency or reward_currency_for_product(candidate.issuer, candidate.product_name)
         product = models.CardProduct(
             issuer=candidate.issuer.strip(),
             product_name=candidate.product_name.strip(),
             product_family=derive_product_family(candidate.issuer, candidate.product_name),
             ownership=candidate.ownership or "Personal",
             account_type=candidate.account_type or "Credit Card",
-            currency=candidate.currency,
+            currency=currency,
             eligibility_tags=candidate.eligibility_tags,
-            tag=candidate.tag,
+            tag=candidate.tag or reward_tag_for_currency(currency),
             reports_to_personal_credit=candidate.reports_to_personal_credit,
             added_by=candidate.added_by,
             discovery_reviewed=False,
@@ -536,6 +520,8 @@ def run_discovery(db: Session, issuers: list[str] | None = None) -> dict:
         )
         db.add(product)
         existing.add(key)
+        if variant is not None:
+            existing_variants.add(variant)
         added.append(
             {
                 "issuer": candidate.issuer,

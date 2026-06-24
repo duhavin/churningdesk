@@ -1,32 +1,10 @@
 import { useEffect, useState } from "react";
-import { Field, Modal } from "./ui";
+import { Field, Modal, cardName } from "./ui";
 import type { CatalogEntry, HeldCard } from "../lib/api";
 
 const OWNERSHIP = ["Personal", "Business"];
 const ACCOUNT_TYPES = ["Credit Card", "Charge Card", "Flexible Spending Credit Card"];
 const STATUSES = ["Active", "Downgrade Pending", "Cancel Pending", "Closed"];
-
-function heldDisplayName(card: CatalogEntry) {
-  let name = card.product_name
-    .replace(/[®℠™]/g, "")
-    .replace(/\bcredit\s+card\b/gi, "")
-    .replace(/\bcharge\s+card\b/gi, "")
-    .replace(/\brewards?\b/gi, "")
-    .replace(/\bcard\b/gi, "")
-    .replace(/\bfor\s+business\b/gi, "Business")
-    .replace(/\bfrom\s+american\s+express\b/gi, "")
-    .replace(/\bby\s+american\s+express\b/gi, "")
-    .replace(/\bamerican\s+express\b/gi, "")
-    .replace(/\bamex\b/gi, "")
-    .replace(/\bcapital\s+one\b/gi, "")
-    .replace(/\bchase\b/gi, "")
-    .replace(/\bciti\b/gi, "")
-    .replace(/\bwells\s+fargo\b/gi, "")
-    .replace(/\bthe\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return name || card.product_name;
-}
 
 export function CardForm({
   open,
@@ -85,14 +63,15 @@ export function CardForm({
   }, [open, initial, prefill]);
 
   const set = (k: string, v: any) => setF((p: any) => ({ ...p, [k]: v }));
+  const catalogOption = (c: CatalogEntry) => `${c.issuer} - ${cardName(c)}`;
 
   const onPickCatalog = (name: string) => {
-    const match = catalog.find((c) => `${c.issuer} — ${c.product_name}` === name);
+    const match = catalog.find((c) => catalogOption(c) === name || `${c.issuer} - ${c.product_name}` === name);
     if (match) {
       setF((p: any) => ({
         ...p,
         issuer: match.issuer,
-        product_name: p.product_name?.trim() ? p.product_name : heldDisplayName(match),
+        product_name: p.product_name?.trim() ? p.product_name : cardName(match),
         product_id: match.id,
         ownership: match.ownership,
         account_type: match.account_type,
@@ -160,7 +139,7 @@ export function CardForm({
             />
             <datalist id="catalog-list">
               {catalog.map((c) => (
-                <option key={c.id} value={`${c.issuer} — ${c.product_name}`} />
+                <option key={c.id} value={catalogOption(c)} />
               ))}
             </datalist>
           </Field>

@@ -6,14 +6,20 @@ Used by the Card Plan tab and the Application Pipeline so both see the same
 from __future__ import annotations
 
 import datetime as dt
+from typing import TYPE_CHECKING
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..benefit_normalization import normalize_public_benefits
 from ..crypto import MissingKeyError
+from ..product_identity import canonical_product_key, derive_product_family, product_display_name, product_variant_key
 from . import eligibility as elig
 from . import scoring
+
+if TYPE_CHECKING:
+    from .decision_context import DecisionContext
 
 
 def valuation_map(db: Session) -> dict[str, float]:
@@ -32,16 +38,91 @@ def blacklisted_keys(db: Session) -> set[tuple[str, str]]:
     }
 
 
+def _catalog_identity_key(p: models.CardProduct) -> tuple[str, str, str]:
+    variant = product_variant_key(p.issuer, p.product_name)
+    if variant:
+        return ("variant", variant[0], variant[1])
+    return (
+        "exact",
+        (p.issuer or "").strip().lower(),
+        (p.product_name or "").strip().lower(),
+    )
+
+
+def _product_completeness_score(p: models.CardProduct) -> tuple:
+    data_points = sum(
+        1
+        for value in (
+            p.current_offer_effective,
+            p.current_offer_cash,
+            p.current_offer_min_spend,
+            p.peak_offer_points,
+            p.annual_fee,
+            p.referral_bonus_effective,
+            p.referral_bonus_cash,
+            p.earn_multipliers,
+            p.best_category_uses,
+            p.card_benefits,
+            p.eligibility_tags,
+            p.currency,
+            p.source_url,
+        )
+        if value not in (None, "", [], {})
+    )
+    issuer = (p.issuer or "").strip().lower()
+    financial_issuer = int(
+        issuer in {"american express", "amex", "chase", "capital one", "citi", "bank of america", "wells fargo", "u.s. bank"}
+    )
+    return (
+        data_points,
+        int(bool(p.last_verified)),
+        int(bool(p.discovery_reviewed)),
+        financial_issuer,
+        -(p.id or 0),
+    )
+
+
+def dedupe_products_by_variant(products: list[models.CardProduct]) -> list[models.CardProduct]:
+    """Collapse same-card name/issuer variants for decision and display paths."""
+    chosen: dict[tuple[str, str, str], models.CardProduct] = {}
+    for product in products:
+        key = _catalog_identity_key(product)
+        current = chosen.get(key)
+        if current is None or _product_completeness_score(product) > _product_completeness_score(current):
+            chosen[key] = product
+    return sorted(chosen.values(), key=lambda p: ((p.issuer or ""), (p.product_name or ""), p.id or 0))
+
+
 def effective_catalog(db: Session) -> list[models.CardProduct]:
-    """All catalog products minus anything matching the blacklist (§5.3)."""
+    """All catalog products minus blacklisted and same-variant duplicates."""
     bl = blacklisted_keys(db)
     products = db.scalars(select(models.CardProduct)).all()
-    return [
+    filtered = [
         p
         for p in products
         if ((p.issuer or "").strip().lower(), (p.product_name or "").strip().lower())
         not in bl
     ]
+    return dedupe_products_by_variant(filtered)
+
+
+def _verified_status(p: models.CardProduct) -> str:
+    if not p.source_url or not p.last_verified:
+        return "needs_source"
+    age_days = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - p.last_verified).days
+    if age_days > 30:
+        return "stale"
+    return "verified"
+
+
+def _display_benefits(p: models.CardProduct) -> list | None:
+    return normalize_public_benefits(
+        p.issuer,
+        p.product_name,
+        p.source_url,
+        p.card_benefits,
+        allow_reference=_verified_status(p) == "verified",
+    ) or p.card_benefits
 
 
 def product_to_dict(p: models.CardProduct) -> dict:
@@ -49,6 +130,8 @@ def product_to_dict(p: models.CardProduct) -> dict:
         "id": p.id,
         "issuer": p.issuer,
         "product_name": p.product_name,
+        "display_name": product_display_name(p.issuer, p.product_name),
+        "canonical_key": canonical_product_key(p.issuer, p.product_name),
         "product_family": p.product_family,
         "ownership": p.ownership,
         "account_type": p.account_type,
@@ -77,7 +160,7 @@ def product_to_dict(p: models.CardProduct) -> dict:
         "first_year_credit_value": p.first_year_credit_value,
         "earn_multipliers": p.earn_multipliers,
         "best_category_uses": p.best_category_uses,
-        "card_benefits": p.card_benefits,
+        "card_benefits": _display_benefits(p),
         "downgrade_paths": p.downgrade_paths,
         "eligibility_tags": p.eligibility_tags,
         "tag": p.tag,
@@ -86,12 +169,72 @@ def product_to_dict(p: models.CardProduct) -> dict:
         "source_url": p.source_url,
         "last_verified": p.last_verified.isoformat() if p.last_verified else None,
         "last_web_search_at": p.last_web_search_at.isoformat() if p.last_web_search_at else None,
+        "last_supplemental_search_at": p.last_supplemental_search_at.isoformat() if p.last_supplemental_search_at else None,
         "notes": p.notes,
     }
 
 
 def _key(issuer: str | None, name: str | None) -> tuple[str, str]:
     return ((issuer or "").strip().lower(), (name or "").strip().lower())
+
+
+def find_product_by_identity(db: Session, issuer: str | None, product_name: str | None) -> models.CardProduct | None:
+    """Find an existing product by exact identity or canonical variant."""
+    exact = _key(issuer, product_name)
+    if exact != ("", ""):
+        product = db.scalar(
+            select(models.CardProduct).where(
+                models.CardProduct.issuer == issuer,
+                models.CardProduct.product_name == product_name,
+            )
+        )
+        if product:
+            return product
+    variant = product_variant_key(issuer, product_name)
+    if not variant:
+        return None
+    for product in db.scalars(select(models.CardProduct)).all():
+        if product_variant_key(product.issuer, product.product_name) == variant:
+            return product
+    return None
+
+
+def _set_missing_public_identity_fields(product: models.CardProduct, data: dict) -> bool:
+    changed = False
+    safe_fields = (
+        "product_family",
+        "ownership",
+        "account_type",
+        "currency",
+        "reports_to_personal_credit",
+        "tag",
+        "added_by",
+        "source_url",
+        "notes",
+    )
+    if not data.get("product_family"):
+        data["product_family"] = derive_product_family(data.get("issuer"), data.get("product_name"))
+    for field in safe_fields:
+        value = data.get(field)
+        if getattr(product, field, None) in (None, "", [], {}) and value not in (None, "", [], {}):
+            setattr(product, field, value)
+            changed = True
+    return changed
+
+
+def upsert_product_by_identity(db: Session, data: dict) -> tuple[models.CardProduct, bool]:
+    """Create or reuse a catalog product using canonical variant identity."""
+    product = find_product_by_identity(db, data.get("issuer"), data.get("product_name"))
+    if product:
+        _set_missing_public_identity_fields(product, data)
+        return product, False
+    payload = dict(data)
+    payload["product_family"] = payload.get("product_family") or derive_product_family(
+        payload.get("issuer"), payload.get("product_name")
+    )
+    product = models.CardProduct(**payload)
+    db.add(product)
+    return product, True
 
 
 def _targeted_map(
@@ -170,33 +313,42 @@ def _show_in_plan(p: models.CardProduct) -> bool:
 
 
 def scored_catalog(
-    db: Session, user: str, held: list[models.HeldCard] | None = None
+    db: Session,
+    user: str,
+    held: list[models.HeldCard] | None = None,
+    context: "DecisionContext | None" = None,
 ) -> list[dict]:
     """Catalog entries enriched with per-user eligibility, score, and rank.
 
     Pass ``held`` to reuse an already-loaded held-card list (e.g. from the
     pipeline) and avoid re-querying it.
     """
-    vmap = valuation_map(db)
+    vmap = context.valuations if context else valuation_map(db)
     # Load held cards once and reuse across five24 / eligibility / targeted
     # lookups — avoids the N+1 query storm of re-fetching them per product.
-    held = held if held is not None else elig.held_cards(db, user)
+    held = held if held is not None else (
+        list(context.held_by_user.get(user, [])) if context else elig.held_cards(db, user)
+    )
     f24 = elig.five24(db, user, held=held)
     today = dt.date.today()
-    manual = list(
-        db.scalars(
-            select(models.ManualTargetedOffer).where(
-                models.ManualTargetedOffer.user == user,
-                or_(
-                    models.ManualTargetedOffer.expires_at.is_(None),
-                    models.ManualTargetedOffer.expires_at >= today,
-                ),
-            )
-        ).all()
+    manual = (
+        list(context.manual_targeted_by_user.get(user, []))
+        if context
+        else list(
+            db.scalars(
+                select(models.ManualTargetedOffer).where(
+                    models.ManualTargetedOffer.user == user,
+                    or_(
+                        models.ManualTargetedOffer.expires_at.is_(None),
+                        models.ManualTargetedOffer.expires_at >= today,
+                    ),
+                )
+            ).all()
+        )
     )
     targeted_map = _targeted_map(held, manual)
     manual_map = {_key(m.issuer, m.product_name): m for m in manual}
-    products = [p for p in effective_catalog(db) if _show_in_plan(p)]
+    products = [p for p in (context.products if context else effective_catalog(db)) if _show_in_plan(p)]
 
     entries: list[dict] = []
     for p in products:
@@ -222,6 +374,7 @@ def scored_catalog(
                 "needs_data": s.needs_data,
                 "value_known": s.value_known,
                 "peak_is_targeted": s.peak_is_targeted,
+                "is_exceptional": s.is_exceptional,
             }
         )
         entries.append(entry)

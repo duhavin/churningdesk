@@ -144,6 +144,7 @@ class CardProduct(Base):
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_verified: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_web_search_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    last_supplemental_search_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
@@ -175,6 +176,43 @@ class CardProduct(Base):
         )
 
 
+class CardReference(Base):
+    """Curated PUBLIC identity/source hints for cards the app cares about.
+
+    This table intentionally stores stable metadata only. Offer amounts, peaks,
+    fees, and benefits still come from sourced ingestion evidence.
+    """
+
+    __tablename__ = "card_reference"
+    __table_args__ = (
+        UniqueConstraint("canonical_key", name="uq_card_reference_canonical_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    canonical_key: Mapped[str] = mapped_column(String(180), index=True)
+    issuer: Mapped[str] = mapped_column(String(120), index=True)
+    product_name: Mapped[str] = mapped_column(String(200), index=True)
+    display_name: Mapped[str] = mapped_column(String(120))
+    aliases: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    search_terms: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    product_family: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    ownership: Mapped[str] = mapped_column(String(20), default="Personal")
+    account_type: Mapped[str] = mapped_column(String(40), default="Credit Card")
+    reports_to_personal_credit: Mapped[bool] = mapped_column(Boolean, default=True)
+    issuer_domain: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    issuer_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    offer_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    history_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    benefits_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trusted_source_urls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    learned_source_urls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str] = mapped_column(String(40), default="seed")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 class ProposedChange(Base):
     """Human-in-the-loop review queue for LLM-extracted changes (§4.4)."""
 
@@ -188,6 +226,10 @@ class ProposedChange(Base):
     new_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|rejected
 
@@ -340,6 +382,29 @@ class UserProfile(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class BenefitUsage(Base):
+    """PRIVATE per-user usage tracking for sourced card benefits/credits."""
+
+    __tablename__ = "benefit_usage"
+    __table_args__ = (
+        UniqueConstraint("user", "held_card_id", "benefit_key", "period_key", name="uq_benefit_usage_period"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user: Mapped[str] = mapped_column(String(40), index=True)
+    held_card_id: Mapped[int] = mapped_column(ForeignKey("held_card.id"), index=True)
+    benefit_key: Mapped[str] = mapped_column(String(180))
+    benefit_name: Mapped[str] = mapped_column(String(240))
+    period_key: Mapped[str] = mapped_column(String(40))
+    period_start: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    amount_available: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount_used: Mapped[float | None] = mapped_column(EncryptedFloat, nullable=True)  # 🔒
+    suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
+    notes: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)  # 🔒
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 class ManualTargetedOffer(Base):
     """PRIVATE per-user targeted offer for ANY product (held or not).
 
@@ -376,10 +441,17 @@ class TargetRedemption(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user: Mapped[str] = mapped_column(String(40), index=True)
     name: Mapped[str] = mapped_column(String(200))
+    origin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    destination: Mapped[str | None] = mapped_column(String(80), nullable=True)
     region: Mapped[str | None] = mapped_column(String(40), nullable=True)
     cabin_or_tier: Mapped[str | None] = mapped_column(String(60), nullable=True)
     preferred_programs: Mapped[str | None] = mapped_column(Text, nullable=True)
     est_cost_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_value_cash: Mapped[float | None] = mapped_column(Float, nullable=True)
+    buy_points_cpp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    travel_start_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    travel_end_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    passenger_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     frequency: Mapped[str | None] = mapped_column(String(60), nullable=True)
     priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

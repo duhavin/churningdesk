@@ -22,6 +22,18 @@ export function StatusBadge({ status }: { status: string }) {
   );
 }
 
+export function RareBadge() {
+  return (
+    <span className="inline-flex items-center justify-center whitespace-nowrap rounded-md border border-fuchsia-400/50 bg-fuchsia-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-200">
+      rare
+    </span>
+  );
+}
+
+export function cardName(card: any): string {
+  return card?.display_name || card?.product_display_name || card?.product_name || "";
+}
+
 export function Card({
   children,
   className = "",
@@ -149,12 +161,21 @@ export function Banner({ kind, children }: { kind: "warn" | "info" | "error"; ch
   return <div className={`rounded-lg border px-3 py-2 text-sm ${styles}`}>{children}</div>;
 }
 
-export function fmtMoney(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+function numericValue(n: number | string | null | undefined): number | null {
+  if (n === null || n === undefined) return null;
+  if (typeof n === "number") return Number.isFinite(n) ? n : null;
+  const parsed = Number(String(n).replace(/[$,]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function fmtNum(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  return n.toLocaleString();
+export function fmtMoney(n: number | string | null | undefined): string {
+  const value = numericValue(n);
+  if (value === null) return "—";
+  return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
+export function fmtNum(n: number | string | null | undefined): string {
+  const value = numericValue(n);
+  if (value === null) return "—";
+  return value.toLocaleString();
 }
