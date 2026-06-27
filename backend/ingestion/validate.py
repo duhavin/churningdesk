@@ -882,7 +882,10 @@ def apply_extraction(
             merged_benefits,
             allow_reference=False,
         )
-        new_fields["card_benefits"] = normalized_benefits or merged_benefits
+        if normalized_benefits:
+            new_fields["card_benefits"] = normalized_benefits
+        else:
+            new_fields.pop("card_benefits", None)
     evidence_recorded = _record_evidence(db, product, ext, source_url, new_fields)
 
     committed: list[str] = []

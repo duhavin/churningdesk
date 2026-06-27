@@ -361,6 +361,8 @@ def _structured_existing(items: Any) -> list[Any]:
             continue
         if _is_bad_benefit_name(name):
             continue
+        if not is_structured and len(name) > 170:
+            continue
         name_signal = _has_benefit_signal(name)
         if (is_structured and len(name) > 96) or not name_signal:
             continue

@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import trafilatura
 from lxml import html
 
+from ..benefit_normalization import is_benefit_noise
 from .fetch import FetchedPage
 from .extract import OfferScanRow
 
@@ -672,8 +673,10 @@ def _extract_benefits(sentences: list[str], evidence: dict[str, list[str]]) -> l
         low = sentence.lower()
         if not any(term in low for term in benefit_terms):
             continue
+        if is_benefit_noise(sentence):
+            continue
         compact = _compact(sentence, 180)
-        if compact and compact not in hits:
+        if compact and not is_benefit_noise(compact) and compact not in hits:
             hits.append(compact)
             _field(evidence, "card_benefits", sentence)
         if len(hits) >= 8:

@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import config, models
 from backend.db import Base
-from backend.ingestion import extract, schedule, validate
+from backend.ingestion import extract, schedule, static_parse, validate
 from backend.logic import catalog, eligibility, pipeline, scoring
 from backend.product_identity import canonical_product_key, product_display_name, product_reference, product_variant_key
 from backend.routers.ingestion import _proposed_change_to_dict
@@ -310,6 +310,50 @@ class IngestionGuardTests(unittest.TestCase):
         self.assertEqual(product.best_category_uses, {"dining": "3x", "travel": "2x"})
         self.assertEqual(product.card_benefits, ["$100 annual travel credit"])
         self.assertIsNone(product.current_offer_points)
+
+    def test_static_benefit_extraction_skips_welcome_and_disclosure_fragments(self):
+        evidence: dict[str, list[str]] = {}
+        valid = "$100 annual travel credit for eligible bookings."
+        hits = static_parse._extract_benefits(
+            [
+                "OUR BEST OFFER RETURNS Earn 150,000 bonus points after you spend $30,000 on purchases.",
+                "While we don't cover all available credit cards, our editorial team reviews cards.",
+                valid,
+            ],
+            evidence,
+        )
+
+        self.assertEqual(hits, [valid])
+        self.assertEqual(evidence["card_benefits"], [valid])
+
+    def test_raw_benefit_fragments_do_not_fall_back_to_catalog_write(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Useful Rewards Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        raw_fragment = (
+            "Benefits include lounge access, travel protection, purchase protection, rental car coverage, "
+            "and other useful account features described in this comparison table with editorial notes "
+            "that should not be written as one catalog benefit."
+        )
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.9,
+            issuer="Test Bank",
+            card_name="Useful Rewards Card",
+            card_benefits=[raw_fragment],
+            evidence_snippets={"card_benefits": [raw_fragment]},
+            source_url="https://example.test/useful-rewards",
+        )
+
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+
+        self.assertNotIn("card_benefits", result["committed"])
+        self.assertNotIn("card_benefits", result["proposed"])
+        self.assertNotIn("card_benefits", result["rejected"])
+        self.assertIsNone(product.card_benefits)
 
     def test_broad_roundup_cannot_write_card_specific_annual_fee(self):
         db = self._session()

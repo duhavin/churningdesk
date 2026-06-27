@@ -4,6 +4,36 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-06-26 23:46 -07:00 - Benefit Fragment Ingestion Guard
+
+**Status:** completed. **Scope:** public benefit extraction, benefit normalization, apply-time catalog writes, regression tests, CodeGraph sync.
+
+**What Changed**
+
+- Confirmed the WEwards CodeGraph index was callable, then synced it before using graph-guided file selection.
+- Tightened static benefit extraction so welcome-offer copy, disclosure/editorial text, pricing/legal fragments, and other known benefit noise are skipped before catalog validation.
+- Tightened public benefit normalization so overly long unstructured source strings are not accepted as catalog benefits.
+- Removed the apply-time fallback that could write unnormalized raw benefit strings when normalization returned no clean benefits.
+- Added regression tests for noisy static benefit extraction and raw-fragment fallback prevention.
+
+**Verification**
+
+- CodeGraph status reported the WEwards index up to date before the patch.
+- Changed-module Python compile passed.
+- Targeted regression tests passed.
+- Focused ingestion/data-quality/benefit-tracker/research-resolver tests passed.
+- Full backend test discovery passed: 103 tests. Existing SQLAlchemy ResourceWarnings for unclosed in-memory SQLite connections still appear.
+- CodeGraph sync ran after the patch and indexed 4 changed files.
+
+**Open Risks**
+
+- Existing dirty catalog data, if already stored locally before this fix, may need a cleanup/backfill pass to remove prior noisy benefit rows.
+- External source pages can still change structure; parser and validation tests should expand as new bad source patterns appear.
+
+**Rollback Notes**
+
+- Revert the benefit normalization, static parser, apply-time validation, and ingestion guard test changes to restore the prior behavior. After rollback, rerun benefit tracker and research resolver tests because raw benefit fragments may again reach catalog writes.
+
 ## 2026-06-26 23:38 -07:00 - Source Conflict Auto-Repair And Refresh Crash Fix
 
 **Status:** completed. **Scope:** public product source-quality repair, refresh result reporting, valuation refresh resilience.

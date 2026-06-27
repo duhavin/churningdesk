@@ -1,6 +1,6 @@
 # WEwards Current State
 
-Last updated: 2026-06-26 22:43 -07:00
+Last updated: 2026-06-26 23:46 -07:00
 
 ## Project Mode
 
@@ -94,8 +94,8 @@ Currently built:
 Known active risks:
 
 - Public card data can become stale or mismatched if source pages drift.
-- Benefit and offer extraction can produce noise unless validation gates remain
-  strict.
+- Benefit and offer extraction can produce noise unless parser, normalization,
+  and apply-time validation gates remain strict.
 - Private data must remain local and out of LLM/web flows.
 - Pre-rename naming can confuse scripts, docs, or ports.
 
