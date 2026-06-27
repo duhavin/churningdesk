@@ -82,6 +82,9 @@ COBRAND_CONFLICT_TERMS = {
     "wyndham",
     "bilt",
 }
+COMPATIBLE_COBRAND_TERMS = {
+    "atmos": {"alaska"},
+}
 
 VARIANT_CONFLICT_GROUPS = (
     {"preferred", "reserve"},
@@ -146,6 +149,11 @@ def has_variant_conflict(issuer: str | None, product_name: str | None, text: str
         return True
 
     for term in COBRAND_CONFLICT_TERMS:
+        if any(
+            anchor in product_tokens and term in compatible
+            for anchor, compatible in COMPATIBLE_COBRAND_TERMS.items()
+        ):
+            continue
         if term in haystack and term not in product_tokens:
             return True
 

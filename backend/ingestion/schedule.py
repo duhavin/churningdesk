@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from .. import card_references, config, models, source_quality
 from ..logic.catalog import effective_catalog
+from ..logic import catalog_cleanup
 from . import extract, fetch, rendered_fetch, research_resolver, static_parse, validate
 
 STALE_AFTER_DAYS = 3
@@ -1014,6 +1015,7 @@ def run_refresh(
     priority_product_variants: list[tuple[str, str]] | None = None,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
+    source_cleanup = catalog_cleanup.repair_unsafe_product_sources(db)
     review_cleanup = validate.cleanup_bad_pending_changes(db)
     if valuations_only:
         valuations = backfill_valuations(db)
@@ -1063,6 +1065,7 @@ def run_refresh(
             "peaks_filled": 0,
             "valuations_added": valuations,
             "review_cleanup": review_cleanup,
+            "source_cleanup": source_cleanup,
         }
 
     all_products = effective_catalog(db)
@@ -1784,6 +1787,7 @@ def run_refresh(
         "peaks_filled": peaks_filled,
         "valuations_added": valuations,
         "review_cleanup": review_cleanup,
+        "source_cleanup": source_cleanup,
     }
 
 
@@ -1806,6 +1810,8 @@ def backfill_valuations(db: Session) -> int:
     if not currencies:
         return 0
 
+    requested_currencies = {currency.strip().lower(): currency for currency in currencies}
+    seen_currencies = set(have)
     added = 0
     try:
         research = extract.research_point_valuations(currencies)
@@ -1815,6 +1821,9 @@ def backfill_valuations(db: Session) -> int:
         return 0
 
     for cv in extracted:
+        currency_key = (cv.currency or "").strip().lower()
+        if not currency_key or currency_key not in requested_currencies or currency_key in seen_currencies:
+            continue
         source_url = _normalize_url(cv.source_url) if _is_real_public_url(cv.source_url) else None
         if source_url is None and source_urls:
             source_url = _normalize_url(source_urls[0]) if _is_real_public_url(source_urls[0]) else None
@@ -1822,12 +1831,13 @@ def backfill_valuations(db: Session) -> int:
             continue
         db.add(
             models.Valuation(
-                currency=cv.currency.strip(),
+                currency=requested_currencies[currency_key],
                 cpp_scraped=cv.cpp,
                 source_url=source_url,
                 last_verified=_utcnow(),
             )
         )
+        seen_currencies.add(currency_key)
         added += 1
     db.commit()
     return added

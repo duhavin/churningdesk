@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from backend import models
 from backend.db import Base
 from backend.logic import catalog_health
+from backend import source_quality
 
 
 class CatalogHealthTests(unittest.TestCase):
@@ -191,6 +192,17 @@ class CatalogHealthTests(unittest.TestCase):
 
                 self.assertIn(expected_issue, issue_codes)
                 self.assertEqual(row["status"], "needs_data")
+
+    def test_atmos_source_with_alaska_brand_is_not_identity_conflict(self):
+        source = "https://newsroom.bankofamerica.com/content/newsroom/press-releases/2025/08/alaska-airlines-and-bank-of-america-present-a-new-premium-credit.html"
+
+        issue = source_quality.source_quality_issue(
+            "Bank of America",
+            "Atmos Rewards Summit Visa Infinite credit card",
+            source,
+        )
+
+        self.assertEqual(issue, "source_not_product_specific")
 
     def _session(self):
         engine = create_engine("sqlite:///:memory:")

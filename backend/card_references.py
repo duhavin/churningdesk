@@ -12,7 +12,7 @@ from typing import Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import models
+from . import models, source_quality
 from .product_identity import (
     canonical_product_key,
     derive_product_family,
@@ -389,7 +389,7 @@ def reference_source_urls(db: Session, product: models.CardProduct) -> list[str]
     ref = get_reference(db, product.issuer, product.product_name)
     if not ref or not ref.active:
         return []
-    return _dedupe(
+    urls = _dedupe(
         [
             ref.issuer_url,
             ref.offer_url,
@@ -399,6 +399,11 @@ def reference_source_urls(db: Session, product: models.CardProduct) -> list[str]
             *(ref.learned_source_urls or []),
         ]
     )
+    return [
+        url
+        for url in urls
+        if source_quality.is_safe_product_source(product.issuer, product.product_name, url)
+    ]
 
 
 def promote_reference_url(db: Session, product: models.CardProduct, url: str | None) -> bool:

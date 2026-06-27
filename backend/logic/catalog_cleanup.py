@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import card_references, models, source_quality
 from ..product_identity import product_display_name, product_variant_key
 from .catalog import _product_completeness_score
 
@@ -43,6 +43,11 @@ SCALAR_COPY_FIELDS = (
 )
 LIST_MERGE_FIELDS = ("card_benefits", "downgrade_paths", "eligibility_tags")
 DICT_MERGE_FIELDS = ("earn_multipliers", "best_category_uses")
+UNSAFE_SOURCE_ISSUES = {
+    "source_identity_conflict",
+    "broad_source_not_product_truth",
+    "source_not_product_specific",
+}
 
 
 def _empty(value: Any) -> bool:
@@ -214,4 +219,99 @@ def merge_duplicate_products(db: Session, *, commit: bool = True) -> dict:
         "groups_merged": len(merged_groups),
         "duplicates_deleted": sum(len(group["deleted_duplicate_ids"]) for group in merged_groups),
         "groups": merged_groups,
+    }
+
+
+def _safe_reference_url(db: Session, product: models.CardProduct) -> str | None:
+    for url in card_references.reference_source_urls(db, product):
+        if source_quality.is_safe_product_source(product.issuer, product.product_name, url):
+            return source_quality.normalize_url(url)
+    return None
+
+
+def _deactivate_unsafe_product_sources(db: Session, product: models.CardProduct) -> int:
+    if not product.id:
+        return 0
+    count = 0
+    rows = db.scalars(
+        select(models.SourceConfig).where(
+            models.SourceConfig.product_id == product.id,
+            models.SourceConfig.active.is_(True),
+        )
+    ).all()
+    for row in rows:
+        if source_quality.source_quality_issue(product.issuer, product.product_name, row.url) in UNSAFE_SOURCE_ISSUES:
+            row.active = False
+            count += 1
+    return count
+
+
+def _prune_unsafe_learned_reference_urls(db: Session, product: models.CardProduct) -> int:
+    ref = card_references.get_reference(db, product.issuer, product.product_name)
+    if ref is None or not ref.learned_source_urls:
+        return 0
+    safe_urls = [
+        url
+        for url in ref.learned_source_urls
+        if source_quality.is_safe_product_source(product.issuer, product.product_name, url)
+    ]
+    removed = len(ref.learned_source_urls) - len(safe_urls)
+    if removed:
+        ref.learned_source_urls = safe_urls or None
+    return removed
+
+
+def repair_unsafe_product_sources(db: Session, *, commit: bool = True) -> dict:
+    """Quarantine product sources that cannot support decision ranking.
+
+    Unsafe sources should not strand a card forever. When the reference registry
+    has an exact safe issuer/product URL, promote it as the next source to
+    refresh. The product is marked unverified so old facts cannot rank until a
+    refresh re-verifies them from the safe URL.
+    """
+    rows: list[dict] = []
+    product_sources_deactivated = 0
+    learned_reference_urls_removed = 0
+
+    products = db.scalars(select(models.CardProduct)).all()
+    for product in products:
+        issue = source_quality.source_quality_issue(product.issuer, product.product_name, product.source_url)
+        learned_reference_urls_removed += _prune_unsafe_learned_reference_urls(db, product)
+        product_sources_deactivated += _deactivate_unsafe_product_sources(db, product)
+        if issue not in UNSAFE_SOURCE_ISSUES:
+            continue
+
+        replacement = _safe_reference_url(db, product)
+        old_source = product.source_url
+        if replacement:
+            product.source_url = replacement
+            action = "replaced_with_reference_source"
+        else:
+            product.source_url = None
+            action = "cleared_unsafe_source"
+        product.last_verified = None
+        product.last_web_search_at = None
+        product.last_supplemental_search_at = None
+        rows.append(
+            {
+                "product_id": product.id,
+                "display_name": product_display_name(product.issuer, product.product_name),
+                "issue": issue,
+                "action": action,
+                "had_source": bool(old_source),
+                "replacement_source": replacement,
+            }
+        )
+
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return {
+        "repaired_count": len(rows),
+        "replaced_count": len([row for row in rows if row["action"] == "replaced_with_reference_source"]),
+        "cleared_count": len([row for row in rows if row["action"] == "cleared_unsafe_source"]),
+        "product_sources_deactivated": product_sources_deactivated,
+        "learned_reference_urls_removed": learned_reference_urls_removed,
+        "rows": rows,
     }

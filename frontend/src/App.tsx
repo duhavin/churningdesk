@@ -479,7 +479,8 @@ export default function App() {
       }
       if (r.scan?.mode === "valuations_only") {
         const rejected = num(r.review_cleanup?.rejected_count);
-        flash("info", `Valuations refreshed: ${r.valuations_added ?? 0} sourced value(s) added${rejected ? `, ${rejected} noisy review item(s) rejected` : ""}.`);
+        const repairedSources = num(r.source_cleanup?.repaired_count);
+        flash("info", `Valuations refreshed: ${r.valuations_added ?? 0} sourced value(s) added${repairedSources ? `, ${repairedSources} source issue(s) repaired` : ""}${rejected ? `, ${rejected} noisy review item(s) rejected` : ""}.`);
         setBump((b) => b + 1);
         return;
       }
@@ -492,6 +493,7 @@ export default function App() {
       const cooldownSkipped = num(r.scan?.web_search_cooldown_skipped) + num(r.scan?.supplemental_search_cooldown_skipped);
       const renderedPages = num(r.scan?.rendered_pages);
       const rejectedReviewItems = num(r.review_cleanup?.rejected_count);
+      const repairedSources = num(r.source_cleanup?.repaired_count);
       const checked = r.refreshed_count ?? r.products_checked ?? r.results.length;
       const parts = [
         `Refresh checked ${checked} card(s)`,
@@ -503,6 +505,7 @@ export default function App() {
       if (needsData) parts.push(`${needsData} need data`);
       if (r.peaks_filled) parts.push(`${r.peaks_filled} peak(s) filled`);
       if (r.valuations_added) parts.push(`${r.valuations_added} valuation(s) added`);
+      if (repairedSources) parts.push(`${repairedSources} source issue(s) repaired`);
       if (rejectedReviewItems) parts.push(`${rejectedReviewItems} noisy review item(s) rejected`);
       if (deferred) parts.push(`${deferred} deferred`);
       if (cooldownSkipped) parts.push(`${cooldownSkipped} cooldown skip(s)`);

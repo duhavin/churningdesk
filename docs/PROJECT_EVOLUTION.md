@@ -4,6 +4,42 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-06-26 23:38 -07:00 - Source Conflict Auto-Repair And Refresh Crash Fix
+
+**Status:** completed. **Scope:** public product source-quality repair, refresh result reporting, valuation refresh resilience.
+
+**What Changed**
+
+- Added automatic quarantine/repair for unsafe product sources that were stranding cards behind `NEEDS DATA` with source identity/product-specific conflicts.
+- Refresh now runs the source repair before other refresh work and commits it immediately, so a later refresh error cannot roll back the source cleanup.
+- Filtered unsafe learned reference URLs and disabled unsafe product-specific source configs before they can be reused as refresh hints.
+- Allowed Atmos product pages to reference Alaska without becoming a false `source_identity_conflict`; those sources still need to be product-specific before they can support ranking.
+- Surfaced source-repair counts in frontend refresh messages.
+- Made valuation backfill idempotent when the extractor returns duplicate currencies, preventing refresh from crashing on the `valuation.currency` unique constraint.
+
+**Verification**
+
+- Changed-module Python compile passed.
+- Focused source-quality/catalog-cleanup/card-reference/catalog-health tests passed.
+- Added and passed a duplicate-currency valuation backfill regression test.
+- Full backend test suite passed: 101 tests. Existing SQLAlchemy ResourceWarnings for unclosed in-memory SQLite connections still appear.
+- Frontend TypeScript typecheck passed.
+- Frontend build passed. Existing Vite large-bundle warning remains.
+- Local public catalog source repair ran once and repaired 8 unsafe product-source records: 4 replaced, 4 cleared.
+- Restarted WEwards on backend `8000` and frontend `5176`.
+- Lightweight valuation refresh smoke passed with zero errors after restart.
+- Live catalog health reported zero `source_identity_conflict`, zero `broad_source_not_product_truth`, and zero `source_not_product_specific` rows.
+
+**Open Risks**
+
+- Remaining `NEEDS DATA` rows are still expected where public catalog facts or source URLs are genuinely missing/incomplete.
+- A deep public-data refresh may still depend on configured web-search/LLM/provider availability and external page behavior.
+- Backend tests still emit existing SQLAlchemy ResourceWarnings unrelated to this change.
+
+**Rollback Notes**
+
+- Revert the source-quality, card-reference, catalog-cleanup, refresh-schedule, frontend refresh-message, and ingestion-guard test changes to restore the prior behavior. After rollback, rerun catalog health because previously quarantined unsafe sources should not be trusted for ranking without review.
+
 ## 2026-06-26 23:03 -07:00 - CodeGraph Context Index
 
 **Status:** completed. **Scope:** local context tooling, generated graph index, Git ignore hygiene.

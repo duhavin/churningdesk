@@ -4,7 +4,7 @@ import unittest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
-from backend import models
+from backend import card_references, models
 from backend.db import Base
 from backend.logic import catalog, catalog_cleanup
 from backend.product_identity import product_variant_key
@@ -113,6 +113,51 @@ class CatalogCleanupTests(unittest.TestCase):
             for product in db.scalars(select(models.CardProduct)).all()
         ]
         self.assertEqual(len(variants), len(set(variants)))
+
+    def test_repair_unsafe_product_sources_replaces_with_reference_and_resets_verification(self):
+        db = self._session()
+        card_references.seed_card_references(db)
+        product = db.scalar(
+            select(models.CardProduct).where(
+                models.CardProduct.product_name == "Capital One Venture X Rewards Credit Card"
+            )
+        )
+        product.current_offer_points = 75000
+        product.current_offer_min_spend = 4000
+        product.current_offer_window_months = 3
+        product.source_url = "https://thepointsguy.com/credit-cards/bilt-credit-cards-current-offers"
+        product.last_verified = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        product.last_web_search_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        product.last_supplemental_search_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        db.commit()
+
+        result = catalog_cleanup.repair_unsafe_product_sources(db)
+
+        self.assertEqual(result["repaired_count"], 1)
+        self.assertEqual(result["replaced_count"], 1)
+        self.assertEqual(product.source_url, "https://www.capitalone.com/credit-cards/venture-x")
+        self.assertIsNone(product.last_verified)
+        self.assertIsNone(product.last_web_search_at)
+        self.assertIsNone(product.last_supplemental_search_at)
+
+    def test_repair_unsafe_product_sources_clears_when_no_reference_exists(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Example Bank",
+            product_name="Example Preferred Card",
+            currency="Example Points",
+            source_url="https://www.doctorofcredit.com/best-current-credit-card-sign-bonuses/",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        )
+        db.add(product)
+        db.commit()
+
+        result = catalog_cleanup.repair_unsafe_product_sources(db)
+
+        self.assertEqual(result["repaired_count"], 1)
+        self.assertEqual(result["cleared_count"], 1)
+        self.assertIsNone(product.source_url)
+        self.assertIsNone(product.last_verified)
 
     def _session(self):
         engine = create_engine("sqlite:///:memory:")

@@ -109,6 +109,7 @@ export interface RefreshResult {
   peaks_filled?: number;
   valuations_added?: number;
   review_cleanup?: ApiPayload;
+  source_cleanup?: ApiPayload;
 }
 export interface RefreshRunResponse extends RefreshResult {
   status?: "started" | "already_running" | string;

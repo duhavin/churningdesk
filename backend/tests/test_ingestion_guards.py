@@ -2,6 +2,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -932,6 +933,45 @@ class IngestionGuardTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, scoring.NEEDS_DATA)
+
+    def test_backfill_valuations_dedupes_duplicate_extracted_currency(self):
+        db = self._session()
+        db.add(
+            models.CardProduct(
+                issuer="Bilt",
+                product_name="Bilt Mastercard",
+                currency="Bilt Rewards",
+            )
+        )
+        db.commit()
+        source_url = "https://thepointsguy.com/loyalty-programs/monthly-valuations"
+        extracted = [
+            extract.CurrencyValuation(currency="Bilt Rewards", cpp=2.2, source_url=source_url),
+            extract.CurrencyValuation(currency="Bilt Rewards", cpp=2.1, source_url=source_url),
+        ]
+        old_key = config.ANTHROPIC_API_KEY
+        old_web = config.WEB_SEARCH_ENABLED
+        try:
+            config.ANTHROPIC_API_KEY = "test-key"
+            config.WEB_SEARCH_ENABLED = True
+            with (
+                patch.object(
+                    extract,
+                    "research_point_valuations",
+                    return_value={"text": "Bilt Rewards 2.2 cpp", "sources": [{"url": source_url}]},
+                ),
+                patch.object(extract, "extract_valuations", return_value=extracted),
+            ):
+                added = schedule.backfill_valuations(db)
+        finally:
+            config.ANTHROPIC_API_KEY = old_key
+            config.WEB_SEARCH_ENABLED = old_web
+
+        valuations = db.scalars(select(models.Valuation)).all()
+        self.assertEqual(added, 1)
+        self.assertEqual(len(valuations), 1)
+        self.assertEqual(valuations[0].currency, "Bilt Rewards")
+        self.assertEqual(valuations[0].cpp_scraped, 2.2)
 
     def _session(self):
         engine = create_engine("sqlite:///:memory:")

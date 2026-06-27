@@ -103,6 +103,25 @@ class CardReferenceTests(unittest.TestCase):
             sources[product.id],
         )
 
+    def test_unsafe_learned_reference_url_is_filtered(self):
+        db = self._session()
+        card_references.seed_card_references(db)
+        product = db.scalar(
+            select(models.CardProduct).where(
+                models.CardProduct.product_name == "Capital One Venture X Rewards Credit Card"
+            )
+        )
+        safe = "https://www.capitalone.com/credit-cards/venture-x/"
+        unsafe = "https://thepointsguy.com/credit-cards/bilt-credit-cards-current-offers"
+        ref = card_references.get_reference(db, product.issuer, product.product_name)
+        ref.learned_source_urls = [unsafe, safe]
+        db.commit()
+
+        urls = card_references.reference_source_urls(db, product)
+
+        self.assertIn(safe, urls)
+        self.assertNotIn(unsafe, urls)
+
 
 if __name__ == "__main__":
     unittest.main()
