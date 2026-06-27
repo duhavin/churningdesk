@@ -149,6 +149,8 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "current_offer_window_months": e.get("current_offer_window_months"),
                 "targeted_beats_public": e["targeted_beats_public"],
                 "is_exceptional": e.get("is_exceptional", False),
+                "decision_ready": e.get("decision_ready", True),
+                "data_quality_issues": e.get("data_quality_issues", []),
                 "reason": reason,
             }
         )
@@ -171,6 +173,8 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "current_offer_window_months": e.get("current_offer_window_months"),
                 "targeted_beats_public": e["targeted_beats_public"],
                 "is_exceptional": e.get("is_exceptional", False),
+                "decision_ready": e.get("decision_ready", False),
+                "data_quality_issues": e.get("data_quality_issues", []),
                 "reason": _needs_review_reason(e),
             }
         )
@@ -196,6 +200,8 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "current_offer_window_months": e.get("current_offer_window_months"),
                 "targeted_beats_public": e["targeted_beats_public"],
                 "is_exceptional": e.get("is_exceptional", False),
+                "decision_ready": e.get("decision_ready", False),
+                "data_quality_issues": e.get("data_quality_issues", []),
                 "relationship": "same_family_ladder",
                 "reason": _alternate_strategy_reason(e),
             }
@@ -257,6 +263,24 @@ def _apply_reason(e: dict, under_524: bool) -> str:
 
 
 def _needs_review_reason(e: dict) -> str:
+    issues = e.get("data_quality_issues") or []
+    if issues:
+        labels = {
+            "pending_verified_update": "verified update pending adoption",
+            "source_identity_conflict": "source conflicts with this product",
+            "broad_source_not_product_truth": "source is a broad roundup, not a product page",
+            "source_not_product_specific": "source is not product-specific",
+            "never_verified": "no verified product source yet",
+            "stale_verified_data": "verified data is stale",
+            "missing_current_offer": "missing current public offer",
+            "missing_public_peak": "missing public peak",
+            "missing_annual_fee": "missing annual fee",
+            "missing_currency": "missing rewards currency",
+            "missing_min_spend": "missing minimum spend",
+            "missing_spend_window": "missing spend window",
+        }
+        detail = ", ".join(labels.get(issue, issue.replace("_", " ")) for issue in issues[:3])
+        return f"Excluded from apply queue: {detail}. Refresh/verify before ranking."
     if e["status"] == scoring.LOW_PRIORITY:
         return (
             "Excluded from apply queue: offer value is below the current value floor. "

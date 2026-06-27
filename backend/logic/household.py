@@ -20,11 +20,15 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from .. import config, models
-from ..product_identity import product_display_name, product_variant_key
+from ..product_identity import family_key, product_display_name, product_variant_key
 from . import pipeline as pipeline_logic
 from .decision_context import DecisionContext
 
 STATUS_PRIORITY = {"APPLY NOW": 3, "WATCH": 2, "WAIT": 1}
+REFERRAL_FAMILY_KEYS = {
+    ("capital_one", "capital_one_venture"),
+    ("capital_one", "capital_one_venture_business"),
+}
 
 
 def _key(issuer: str | None, name: str | None) -> tuple[str, str]:
@@ -46,6 +50,12 @@ def _held_referral_keys(
             product_variant = product_variant_key(product.issuer, product.product_name)
             if product_variant:
                 keys.add(("variant", product_variant))
+            product_family = family_key(product.issuer, product.product_name, product.product_family)
+            if product_family in REFERRAL_FAMILY_KEYS:
+                keys.add(("family", product_family))
+    held_family = family_key(held.issuer, held.product_name)
+    if held_family in REFERRAL_FAMILY_KEYS:
+        keys.add(("family", held_family))
     return keys
 
 
@@ -57,6 +67,9 @@ def _candidate_referral_keys(nc: dict) -> set[tuple[str, int | tuple[str, str]]]
     variant = product_variant_key(nc["issuer"], nc["product_name"])
     if variant:
         keys.add(("variant", variant))
+    candidate_family = family_key(nc["issuer"], nc["product_name"], nc.get("product_family"))
+    if candidate_family in REFERRAL_FAMILY_KEYS:
+        keys.add(("family", candidate_family))
     return keys
 
 
@@ -83,13 +96,21 @@ def _referral_reason(
     ref_pts: int | None,
     ref_cash: float | None,
     ref_val: float | None,
+    family_route: bool = False,
 ) -> str:
     display_name = nc.get("display_name") or product_display_name(nc.get("issuer"), nc.get("product_name"))
-    base = (
-        f"{from_user} already holds {display_name} - have {from_user} send "
-        f"{to_user} a referral link so {to_user}'s application also earns {from_user} "
-        "the referral bonus on top of the welcome offer"
-    )
+    if family_route:
+        base = (
+            f"{from_user} already holds a same-family {display_name} product - route "
+            f"{to_user}'s application through {from_user}'s family referral path so the "
+            "household can capture any issuer-supported referral bonus on top of the welcome offer"
+        )
+    else:
+        base = (
+            f"{from_user} already holds {display_name} - have {from_user} send "
+            f"{to_user} a referral link so {to_user}'s application also earns {from_user} "
+            "the referral bonus on top of the welcome offer"
+        )
     if ref_pts or ref_cash:
         pieces = []
         if ref_pts:
@@ -175,8 +196,10 @@ def build_household(db: Session) -> dict:
         for nc in pipelines[to_user]["next_cards"]:
             keys = _candidate_referral_keys(nc)
             for from_user in users:
-                if from_user == to_user or not (keys & active_referral_keys[from_user]):
+                matched_keys = keys & active_referral_keys[from_user]
+                if from_user == to_user or not matched_keys:
                     continue
+                family_route = any(key[0] == "family" for key in matched_keys)
                 product = products.get(nc["id"])
                 ref_pts = getattr(product, "referral_bonus_effective", None) if product else None
                 ref_cash = getattr(product, "referral_bonus_cash", None) if product else None
@@ -206,7 +229,11 @@ def build_household(db: Session) -> dict:
                         "household_gain": round((nc["offer_value"] or 0) + (ref_val or 0), 2),
                         "pipeline_rank": nc.get("rank"),
                         "is_exceptional": nc.get("is_exceptional", False),
-                        "reason": _referral_reason(from_user, to_user, nc, ref_pts, ref_cash, ref_val),
+                        "decision_ready": nc.get("decision_ready", True),
+                        "data_quality_issues": nc.get("data_quality_issues", []),
+                        "route": f"Refer via {from_user}{' (family)' if family_route else ''}",
+                        "referral_match": "family" if family_route else "exact",
+                        "reason": _referral_reason(from_user, to_user, nc, ref_pts, ref_cash, ref_val, family_route),
                     }
                 )
 
@@ -259,8 +286,11 @@ def build_household(db: Session) -> dict:
                     "is_exceptional": nc.get("is_exceptional", False),
                     "household_value": round((nc["offer_value"] or 0) + ref_val, 2),
                     "pipeline_rank": nc.get("rank"),
-                    "route": f"Refer via {ref['from_user']}" if ref else "Direct application",
+                    "decision_ready": nc.get("decision_ready", True),
+                    "data_quality_issues": nc.get("data_quality_issues", []),
+                    "route": ref["route"] if ref else "Direct application",
                     "referral_from": ref["from_user"] if ref else None,
+                    "referral_match": ref.get("referral_match") if ref else None,
                     "referral_value": ref["referral_value"] if ref else None,
                     "reason": nc["reason"],
                 }

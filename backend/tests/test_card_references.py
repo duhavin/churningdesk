@@ -43,6 +43,45 @@ class CardReferenceTests(unittest.TestCase):
         self.assertIsNone(product.current_offer_points)
         self.assertIsNone(product.peak_offer_points)
 
+        bilt = db.scalar(
+            select(models.CardReference).where(
+                models.CardReference.canonical_key == "bilt:bilt_blue"
+            )
+        )
+        self.assertIsNotNone(bilt)
+        self.assertEqual(bilt.display_name, "Bilt Blue")
+        self.assertEqual(bilt.currency, "Bilt Rewards")
+        self.assertIn("Bilt Mastercard", bilt.aliases)
+
+        sapphire_business = db.scalar(
+            select(models.CardReference).where(
+                models.CardReference.canonical_key == "chase:chase_sapphire_business"
+            )
+        )
+        self.assertIsNotNone(sapphire_business)
+        self.assertEqual(sapphire_business.display_name, "Sapphire Reserve Business")
+        self.assertEqual(sapphire_business.currency, "Chase Ultimate Rewards")
+        self.assertEqual(sapphire_business.ownership, "Business")
+        self.assertEqual(
+            sapphire_business.issuer_url,
+            "https://creditcards.chase.com/business-credit-cards/sapphire/reserve",
+        )
+
+        citi_custom = db.scalar(
+            select(models.CardReference).where(
+                models.CardReference.canonical_key == "citi:citi_custom_cash_card"
+            )
+        )
+        self.assertIsNotNone(citi_custom)
+        self.assertFalse(citi_custom.active)
+        self.assertIsNone(
+            db.scalar(
+                select(models.CardProduct).where(
+                    models.CardProduct.product_name == "Citi Custom Cash Card"
+                )
+            )
+        )
+
     def test_learned_reference_url_is_used_as_product_source(self):
         db = self._session()
         card_references.seed_card_references(db)

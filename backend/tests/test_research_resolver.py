@@ -184,7 +184,7 @@ class ResearchResolverTests(unittest.TestCase):
         def fake_fetch_many(urls, **kwargs):
             return {url: pages[url] for url in urls if url in pages}
 
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CHURN_SEARCH_CACHE_DIR": tmp}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_SEARCH_CACHE_DIR": tmp}):
             with patch.object(research_resolver, "_run_uncached_search", side_effect=fake_search) as search_mock:
                 with patch.object(research_resolver.fetch, "fetch_many_pages", side_effect=fake_fetch_many):
                     resolution = research_resolver.resolve_products(products, llm_fallback=False)
@@ -238,7 +238,7 @@ class ResearchResolverTests(unittest.TestCase):
         old_key = config.ANTHROPIC_API_KEY
         config.ANTHROPIC_API_KEY = "test-key"
         try:
-            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CHURN_SEARCH_CACHE_DIR": tmp}):
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_SEARCH_CACHE_DIR": tmp}):
                 with patch.object(research_resolver, "_run_uncached_search", side_effect=fake_search):
                     with patch.object(research_resolver.fetch, "fetch_many_pages", return_value={url: page}):
                         with patch.object(research_resolver.extract, "extract_offers_batch", side_effect=fake_llm):
@@ -292,7 +292,7 @@ class ResearchResolverTests(unittest.TestCase):
         old_key = config.ANTHROPIC_API_KEY
         config.ANTHROPIC_API_KEY = "test-key"
         try:
-            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CHURN_SEARCH_CACHE_DIR": tmp}):
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_SEARCH_CACHE_DIR": tmp}):
                 with patch.object(research_resolver, "_run_uncached_search", side_effect=fake_search):
                     with patch.object(research_resolver.fetch, "fetch_many_pages", return_value={url: page}):
                         with patch.object(research_resolver.extract, "extract_offers_batch", side_effect=fake_llm):
@@ -1035,6 +1035,145 @@ class ResearchResolverTests(unittest.TestCase):
         self.assertEqual(best.source_url, issuer_url)
         self.assertEqual(best.earn_multipliers["dining"], 3.0)
 
+    def test_existing_broad_product_source_is_not_assumed_product_page(self):
+        product = models.CardProduct(
+            issuer="Capital One",
+            product_name="Capital One Venture X Rewards Credit Card",
+            source_url="https://thepointsguy.com/credit-cards/bilt-credit-cards-current-offers",
+        )
+        bad_url = product.source_url
+        pages = {
+            bad_url: schedule.static_parse.parse_page(
+                _page(
+                    bad_url,
+                    "Bilt Credit Cards Current Offers",
+                    """
+                    <p>Bilt Blue Card: earn 2,000 Bilt points after spend.</p>
+                    <p>Bilt cards have no annual fee.</p>
+                    """,
+                )
+            )
+        }
+
+        best, snippet_input = schedule._scan_product_static(
+            product,
+            pages,
+            source_urls=[bad_url],
+            product_source_urls=[],
+        )
+
+        self.assertIsNone(best)
+        self.assertIsNone(snippet_input)
+
+    def test_broad_source_is_not_promoted_to_product_source(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Capital One",
+            product_name="Capital One Venture X Rewards Credit Card",
+            currency="Capital One Miles",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        added = schedule._promote_source_urls(
+            db,
+            ["https://thepointsguy.com/credit-cards/bilt-credit-cards-current-offers"],
+            product_id=product.id,
+        )
+
+        self.assertEqual(added, 0)
+        self.assertEqual(db.query(models.SourceConfig).count(), 0)
+
+    def test_product_specific_trusted_detail_source_can_auto_commit_current_terms(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Capital One",
+            product_name="Capital One Venture X Rewards Credit Card",
+            currency="Capital One Miles",
+            current_offer_points=75000,
+            current_offer_min_spend=4000,
+            current_offer_window_months=3,
+            annual_fee=395,
+            peak_offer_points=75000,
+            source_url="https://www.capitalone.com/credit-cards/venture-x/",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        row = schedule.extract.OfferScanRow(
+            issuer="Capital One",
+            card_name="Capital One Venture X Rewards Credit Card",
+            source_url="https://www.capitalone.com/credit-cards/venture-x/",
+            offer_status="public",
+            confidence=0.92,
+            found=True,
+            bonus_amount=90000,
+            bonus_unit="miles",
+            spend_requirement=4000,
+            spend_window_months=3,
+            annual_fee=395,
+            evidence_snippets={
+                "bonus_amount": ["Capital One Venture X Rewards Credit Card: earn 90,000 miles."],
+                "spend_requirement": ["after spending $4,000 in the first 3 months"],
+                "annual_fee": ["The annual fee is $395."],
+            },
+        )
+
+        result = schedule._apply_scan_row(db, product, row)
+
+        self.assertIn("current_offer_points", result["committed"])
+        self.assertEqual(product.current_offer_points, 90000)
+        self.assertEqual(product.peak_offer_points, 90000)
+
+    def test_static_parser_extracts_chase_sapphire_business_hero_offer(self):
+        product = models.CardProduct(
+            issuer="Chase",
+            product_name="Chase Sapphire Reserve for Business Credit Card",
+            ownership="Business",
+        )
+        issuer_url = "https://creditcards.chase.com/business-credit-cards/sapphire/reserve"
+        pages = {
+            issuer_url: schedule.static_parse.parse_page(
+                _page(
+                    issuer_url,
+                    "Sapphire Reserve for Business Credit Card | Chase.com",
+                    """
+                    <div class="cmp-cardsummarysapphire__title">
+                      <h1>SAPPHIRE RESERVE</h1>
+                      <h2>The Sapphire Reserve for Business<sup>SM</sup> card</h2>
+                    </div>
+                    <nav>No Annual Fee (15) Opens No Annual Fee page in the same window.</nav>
+                    <div class="cmp-cardsummarysapphire__description--newcardmemberoffer">
+                      <h2>
+                        <span>Earn <span class="strikeThrough">150,000</span><span class="strikeThroughFollow"> 200,000 </span>points</span>
+                      </h2>
+                      <p>after you spend $30,000 on purchases in your first 6 months from account opening.</p>
+                    </div>
+                    <div class="cmp-cardsummarysapphire__aprfee">
+                      <p>$795 annual fee</p>
+                    </div>
+                    """,
+                )
+            )
+        }
+
+        best, _ = schedule._scan_product_static(
+            product,
+            pages,
+            source_urls=[],
+            product_source_urls=[issuer_url],
+        )
+
+        self.assertIsNotNone(best)
+        self.assertEqual(best.source_url, issuer_url)
+        self.assertEqual(best.offer_status, "public")
+        self.assertEqual(best.bonus_amount, 200000)
+        self.assertEqual(best.spend_requirement, 30000)
+        self.assertEqual(best.spend_window_months, 6)
+        self.assertEqual(best.annual_fee, 795)
+
     def test_static_refresh_follows_roundup_review_link_for_held_benefit_gap(self):
         db = self._session()
         product = models.CardProduct(
@@ -1155,7 +1294,7 @@ class ResearchResolverTests(unittest.TestCase):
             calls.append(list(urls))
             return {url: pages[url] for url in urls if url in pages}
 
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CHURN_SEARCH_CACHE_DIR": tmp}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_SEARCH_CACHE_DIR": tmp}):
             with patch.object(research_resolver, "_run_uncached_search", side_effect=fake_search):
                 with patch.object(research_resolver.fetch, "fetch_many_pages", side_effect=fake_fetch_many):
                     resolution = research_resolver.resolve_products([product], llm_fallback=False)
@@ -1225,7 +1364,7 @@ class ResearchResolverTests(unittest.TestCase):
             calls.append(list(urls))
             return {url: pages[url] for url in urls if url in pages}
 
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CHURN_SEARCH_CACHE_DIR": tmp}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_SEARCH_CACHE_DIR": tmp}):
             with patch.object(research_resolver, "_run_uncached_search", side_effect=fake_search):
                 with patch.object(research_resolver.fetch, "fetch_many_pages", side_effect=fake_fetch_many):
                     resolution = research_resolver.resolve_products([product], llm_fallback=False)
@@ -1243,7 +1382,7 @@ class ResearchResolverTests(unittest.TestCase):
             models.CardProduct(id=2, issuer="American Express", product_name="American Express Gold Card"),
         ]
 
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CHURN_SEARCH_CACHE_DIR": tmp}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_SEARCH_CACHE_DIR": tmp}):
             with patch.object(research_resolver, "_run_uncached_search", side_effect=RuntimeError("search down")):
                 resolution = research_resolver.resolve_products(products, llm_fallback=False)
 

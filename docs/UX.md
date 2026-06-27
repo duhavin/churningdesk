@@ -1,4 +1,4 @@
-# Churn UX And Application Surface Contract
+# WEwards UX And Application Surface Contract
 
 ## Product Feel
 

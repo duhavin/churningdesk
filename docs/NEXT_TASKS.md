@@ -1,4 +1,4 @@
-# Churn Next Tasks
+# WEwards Next Tasks
 
 This is the lightweight current-priority file. Keep it short and verify against
 code and `docs/PROJECT_EVOLUTION.md` before treating any item as current.

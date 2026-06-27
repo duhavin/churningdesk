@@ -225,6 +225,26 @@ def _interesting(text: str) -> bool:
     return any(k in low for k in OFFER_KEYWORDS)
 
 
+def _text_windows(text: str, *, limit: int = 500) -> list[str]:
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if not compact:
+        return []
+    if len(compact) <= limit:
+        return [_compact(compact, limit)]
+    windows: list[str] = []
+    for match in re.finditer(
+        r"our best offer|welcome offer|after you spend|annual fee|\bearn\b.{0,160}\bpoints?\b|\b\d{1,3}(?:,\d{3})+\s*points?\b",
+        compact,
+        re.I,
+    ):
+        start = max(0, match.start() - 180)
+        end = min(len(compact), match.end() + 320)
+        window = _compact(compact[start:end], limit)
+        if window and _interesting(window) and window not in windows:
+            windows.append(window)
+    return windows or [_compact(compact, limit)]
+
+
 def parse_page(page: FetchedPage) -> ParsedPage:
     try:
         doc = html.fromstring(page.html)
@@ -268,11 +288,32 @@ def parse_page(page: FetchedPage) -> ParsedPage:
             if table_text and _interesting(table_text):
                 table_snippets.append(table_text)
 
+    doc_text = ""
+    if doc is not None:
+        for node in doc.xpath("//script|//style|//noscript"):
+            node.drop_tree()
+        doc_text = doc.text_content()
+
     clean_text = trafilatura.extract(page.html, include_comments=False, include_tables=True) or ""
-    if not clean_text and doc is not None:
-        clean_text = doc.text_content()
+    if not clean_text and doc_text:
+        clean_text = doc_text
     lines = [_compact(line, 500) for line in clean_text.splitlines()]
     lines = [line for line in lines if line][:MAX_TEXT_LINES]
+    if doc_text:
+        seen_lines = {_normalize(line) for line in lines}
+        fallback_lines = [
+            window
+            for line in doc_text.splitlines()
+            for window in _text_windows(line, limit=500)
+        ]
+        for line in fallback_lines:
+            key = _normalize(line)
+            if not key or key in seen_lines or not _interesting(line):
+                continue
+            lines.append(line)
+            seen_lines.add(key)
+            if len(lines) >= MAX_TEXT_LINES:
+                break
 
     return ParsedPage(
         url=page.url,
@@ -375,6 +416,10 @@ def snippets_for_card(
             score += 3
         if assume_product_page and _interesting(line):
             score += 4
+        if re.search(r"\b(after you spend|welcome offer|our best offer|bonus)\b", line, re.I):
+            score += 10
+        if re.search(r"\$[\d,]+(?:\.\d+)?\s+annual\s+fee|annual fee.{0,40}\$[\d,]+", line, re.I):
+            score += 10
         if re.search(r"\d+(?:\.\d+)?\s+(?:x|points?|miles?|%)\b.{0,90}\b(?:per\s+\$?1|per\s+dollar|cash back|on|at|for|in)\b", line, re.I):
             score += 8
         if score >= 4:
@@ -439,6 +484,15 @@ def _extract_bonus(sentences: list[str], evidence: dict[str, list[str]]) -> tupl
             _field(evidence, "bonus_amount", sentence)
             _field(evidence, "bonus_unit", sentence)
             return _number(points.group(1)), points.group(2).lower()
+        compact_points = re.search(
+            rf"earn.*?(\d{{1,3}}(?:,\d{{3}})+|\d{{4,6}})\s*({point_units})",
+            sentence,
+            re.I,
+        )
+        if compact_points:
+            _field(evidence, "bonus_amount", sentence)
+            _field(evidence, "bonus_unit", sentence)
+            return _number(compact_points.group(1)), compact_points.group(2).lower()
     return None, None
 
 
@@ -446,6 +500,7 @@ def _extract_spend(sentences: list[str], evidence: dict[str, list[str]]) -> tupl
     patterns = (
         r"spend(?:ing)?\s+\$?([\d,]+(?:\.\d+)?).{0,100}?(?:first|within|in|during|over).{0,40}?(\d+)\s*(months?|days?)",
         r"after\s+you\s+spend\s+\$?([\d,]+(?:\.\d+)?).{0,100}?(\d+)\s*(months?|days?)",
+        r"spend\s+\$?([\d,]+(?:\.\d+)?).{0,140}?first\s+(\d+)\s*(months?|days?)",
     )
     for sentence in sentences:
         if "spend" not in sentence.lower():
@@ -480,6 +535,8 @@ def _extract_annual_fee(sentences: list[str], evidence: dict[str, list[str]]) ->
     for sentence in sentences:
         low = sentence.lower()
         if "annual fee" not in low:
+            continue
+        if "opens no annual fee page" in low or re.search(r"no annual fee\s*\(\d+\)", low):
             continue
         if "no annual fee" in low or "$0 annual fee" in low:
             _field(evidence, "annual_fee", sentence)
@@ -691,6 +748,18 @@ def deterministic_offer_row(
             "offer ended",
             "no longer available",
             "no longer accepting applications",
+            "stopped accepting applications",
+            "not accepting applications",
+        )
+    )
+    closed_to_new = any(
+        k in joined_low
+        for k in (
+            "closed to new applicants",
+            "no longer accepting applications",
+            "no longer available",
+            "stopped accepting applications",
+            "not accepting applications",
         )
     )
     is_business = (ownership or "").lower() == "business" or "business" in product_name.lower()
@@ -760,6 +829,7 @@ def deterministic_offer_row(
         best_category_uses=_best_category_uses(earn_multipliers),
         card_benefits=card_benefits,
         downgrade_paths=downgrade_paths,
+        eligibility_tags=["closed_to_new_applicants"] if closed_to_new else None,
         offer_expiration=offer_expiration,
         eligibility_language=eligibility_language,
         is_business_card=is_business,

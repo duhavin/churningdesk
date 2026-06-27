@@ -100,7 +100,7 @@ export function ScoreBar({ score }: { score: number }) {
       <div className="h-1.5 flex-1 rounded-full bg-ink-500 overflow-hidden">
         <div className={`h-full ${color}`} style={{ width: `${Math.min(100, Math.max(0, score))}%` }} />
       </div>
-      <span className="font-mono text-xs text-slate-300 w-7 text-right">{score}</span>
+      <span className="w-7 text-right text-xs tabular-nums text-slate-300">{score}</span>
     </div>
   );
 }

@@ -319,6 +319,28 @@ def eligibility(
 
     # --- Capital One: conservative re: recent inquiries (informational) ----
     if _is_capone(issuer):
+        target_variant = product_variant_key(issuer, product_name)
+        venture_bonus_variants = {
+            ("capital_one", "capital_one_venture_personal"),
+            ("capital_one", "capital_one_venture_x_personal"),
+        }
+        if target_variant in venture_bonus_variants:
+            for h in held:
+                held_variant = product_variant_key(h.issuer, h.product_name)
+                if (
+                    held_variant in venture_bonus_variants
+                    and h.welcome_bonus_earned
+                    and h.bonus_earned_date
+                ):
+                    again = add_months(h.bonus_earned_date, 48)
+                    if again > today:
+                        earliest = _max_date(earliest, again)
+                        reasons.append(
+                            "Capital One Venture-family 48-month rule: a Venture/Venture X bonus "
+                            f"was earned on {h.bonus_earned_date.isoformat()}; eligible again "
+                            f"{again.isoformat()}."
+                        )
+
         recent_any = [
             h for h in held if h.date_opened and (today - h.date_opened).days < 90
         ]

@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Sector, Tooltip } from "recharts";
-import { api, type CatalogEntry, type HeldCard } from "../lib/api";
+import { api, type CardReference, type CatalogEntry, type HeldCard } from "../lib/api";
 import type { Flash } from "../App";
 import { Banner, Card, EmptyState, SectionTitle, Spinner, cardName, fmtMoney, fmtNum } from "../components/ui";
 import { CardForm } from "../components/CardForm";
+import { buildCurrencyOptions } from "../lib/currencies";
+import { five24CardStatusLabel } from "../lib/five24";
 
-const PIE_COLORS = ["#22d3ee", "#f472b6", "#a78bfa", "#34d399", "#fbbf24", "#60a5fa", "#fb7185"];
+const PIE_COLORS = ["#0e7490", "#be185d", "#7c3aed", "#047857", "#b45309", "#475569", "#0369a1"];
 
 function StablePieSector(props: any) {
-  return <Sector {...props} className="profile-balance-sector" focusable="false" tabIndex={-1} stroke="#0f172a" strokeWidth={2} />;
+  return <Sector {...props} className="profile-balance-sector" focusable="false" tabIndex={-1} stroke="var(--chart-stroke)" strokeWidth={2} />;
 }
 
 function BalanceTooltip({ active, payload }: any) {
@@ -22,7 +24,7 @@ function BalanceTooltip({ active, payload }: any) {
         <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
         <span>{row.currency}</span>
       </div>
-      <div className="mt-1 space-y-0.5 font-mono text-[11px] text-slate-300">
+      <div className="mt-1 space-y-0.5 text-[11px] text-slate-300">
         <div>{fmtNum(row.balance)} pts</div>
         <div>{row.cpp ? `${row.cpp} cpp` : "No valuation"}</div>
         <div className="text-cyan-accent">{fmtMoney(row.value)}</div>
@@ -167,6 +169,11 @@ function cappedBenefitUsed(value: number | null, available: number | null) {
   return available == null ? used : Math.min(used, Math.max(0, available));
 }
 
+function isArchivedCard(card: HeldCard) {
+  return ["closed", "cancelled", "canceled"].includes(String(card.status || "").toLowerCase());
+}
+
+
 function BenefitsTracker({
   rows,
   missing,
@@ -264,17 +271,17 @@ function BenefitsTracker({
         <div className="mt-1.5 grid grid-cols-3 gap-1.5 text-[10px] sm:gap-2 sm:text-[11px]">
           <div className="min-w-0 rounded-md bg-ink-800/70 px-2 py-1">
             <div className="text-slate-500">{row.is_anniversary ? "Value" : binaryBenefit ? "Type" : "Available"}</div>
-            <div className="truncate font-mono text-slate-200">{benefitValueLabel(row)}</div>
+            <div className="truncate tabular-nums text-slate-200">{benefitValueLabel(row)}</div>
           </div>
           <div className="min-w-0 rounded-md bg-ink-800/70 px-2 py-1">
             <div className="text-slate-500">{row.is_anniversary || binaryBenefit ? "Status" : "Used"}</div>
-            <div className="truncate font-mono text-cyan-accent">
+            <div className="truncate tabular-nums text-cyan-accent">
               {row.is_anniversary || binaryBenefit ? statusLabel(row.status) : fmtMoney(row.amount_used)}
             </div>
           </div>
           <div className="min-w-0 rounded-md bg-ink-800/70 px-2 py-1">
             <div className="text-slate-500">{row.is_anniversary || binaryBenefit ? "Due" : "Left"}</div>
-            <div className="truncate font-mono text-slate-200">{benefitRemainingLabel(row)}</div>
+            <div className="truncate tabular-nums text-slate-200">{benefitRemainingLabel(row)}</div>
           </div>
         </div>
 
@@ -503,6 +510,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const [profile, setProfile] = useState<any>(null);
   const [cards, setCards] = useState<HeldCard[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [references, setReferences] = useState<CardReference[]>([]);
   const [loading, setLoading] = useState(true);
   const [balances, setBalances] = useState<{ currency: string; balance: string }[]>([]);
   const [notes, setNotes] = useState("");
@@ -513,14 +521,17 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const [editing, setEditing] = useState<HeldCard | null>(null);
   const [benefitEdits, setBenefitEdits] = useState<Record<string, BenefitEdit>>({});
   const [savingBenefit, setSavingBenefit] = useState<string | null>(null);
+  const [showArchivedCards, setShowArchivedCards] = useState(false);
+  const [expandedCards, setExpandedCards] = useState<Record<number, boolean>>({});
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.profile(user), api.cards(user), api.catalog(user)])
-      .then(([p, c, cat]) => {
+    Promise.all([api.profile(user), api.cards(user), api.catalog(user), api.cardReferences()])
+      .then(([p, c, cat, refs]) => {
         setProfile(p);
         setCards(c);
         setCatalog(cat);
+        setReferences(refs);
         setBalances(Object.entries(p.point_balances ?? {}).map(([currency, balance]) => ({ currency, balance: String(balance) })));
         setNotes(p.notes ?? "");
         setBenefitEdits(
@@ -543,18 +554,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
 
   useEffect(load, [user, bump]);
 
-  const currencyOptions = Array.from(
-    new Set(
-      [
-        ...catalog.map((c) => c.currency),
-        ...cards.map((c) => c.bonus_currency),
-        ...balances.map((b) => b.currency),
-        "cash back",
-      ]
-        .filter(Boolean)
-        .map((x) => String(x)),
-    ),
-  ).sort();
+  const currencyOptions = buildCurrencyOptions({ profile, catalog, cards, balances });
 
   const save = async () => {
     setSaving(true);
@@ -687,6 +687,9 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const benefitTracker = profile?.benefit_tracker ?? { benefits: [], missing: [], summary: {} };
   const benefitRows = benefitTracker.benefits ?? [];
   const benefitMissing = benefitTracker.missing ?? [];
+  const activeProfileCards = cards.filter((card) => !isArchivedCard(card));
+  const archivedProfileCards = cards.filter(isArchivedCard);
+  const visibleProfileCards = showArchivedCards ? archivedProfileCards : activeProfileCards;
 
   return (
     <div className="space-y-6">
@@ -774,7 +777,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                   <div key={b.currency} className="flex items-center justify-between gap-3 rounded-md border border-ink-400/70 bg-ink-900 px-3 py-2">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium text-slate-100">{b.currency}</div>
-                      <div className="font-mono text-xs text-cyan-accent">{fmtNum(b.balance)} pts</div>
+                      <div className="text-xs font-semibold tabular-nums text-cyan-accent">{fmtNum(b.balance)} pts</div>
                     </div>
                     <div className="flex shrink-0 items-center gap-3 text-xs">
                       <button className="text-slate-400 hover:text-cyan-accent" onClick={() => editBalance(b.currency)}>
@@ -825,29 +828,42 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
           {positiveBalances.length > 0 && (
             <Card className="mt-4">
               <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">Value by currency</div>
-              <div className="profile-balance-chart h-[180px] sm:h-[200px]">
-                <ResponsiveContainer>
-                  <PieChart>
-                    <Pie
-                      data={positiveBalanceChart}
-                      dataKey="value"
-                      nameKey="currency"
-                      innerRadius={42}
-                      outerRadius={76}
-                      activeShape={StablePieSector}
-                      isAnimationActive={false}
-                      paddingAngle={2}
-                      stroke="#0f172a"
-                      strokeWidth={2}
-                      rootTabIndex={-1}
-                    >
-                      {positiveBalanceChart.map((row: any, i: number) => (
-                        <Cell key={i} className="profile-balance-sector" fill={row.pieColor} focusable="false" tabIndex={-1} />
-                      ))}
-                    </Pie>
-                    <Tooltip content={<BalanceTooltip />} cursor={false} wrapperStyle={{ outline: "none" }} />
-                  </PieChart>
-                </ResponsiveContainer>
+              <div className="profile-balance-chart grid min-h-[190px] gap-3 sm:grid-cols-[190px_minmax(0,1fr)] sm:items-center">
+                <div className="h-[180px] sm:h-[190px]">
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie
+                        data={positiveBalanceChart}
+                        dataKey="value"
+                        nameKey="currency"
+                        innerRadius={48}
+                        outerRadius={72}
+                        activeShape={StablePieSector}
+                        isAnimationActive={false}
+                        paddingAngle={1}
+                        stroke="var(--chart-stroke)"
+                        strokeWidth={2}
+                        rootTabIndex={-1}
+                      >
+                        {positiveBalanceChart.map((row: any, i: number) => (
+                          <Cell key={i} className="profile-balance-sector" fill={row.pieColor} focusable="false" tabIndex={-1} />
+                        ))}
+                      </Pie>
+                      <Tooltip content={<BalanceTooltip />} cursor={false} wrapperStyle={{ outline: "none" }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="grid gap-1.5 text-xs">
+                  {positiveBalanceChart.map((row: any) => (
+                    <div key={row.currency} className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-ink-400/60 bg-ink-900/70 px-2.5 py-1.5">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: row.pieColor }} />
+                        <span className="truncate text-slate-200">{row.currency}</span>
+                      </div>
+                      <span className="shrink-0 font-semibold tabular-nums text-slate-300">{fmtMoney(row.value)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </Card>
           )}
@@ -864,7 +880,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                           {fmtNum(b.balance)} pts - {b.cpp ? `${b.cpp} cpp` : "No valuation"}
                         </div>
                       </div>
-                      <div className="shrink-0 text-right font-mono text-cyan-accent">{fmtMoney(b.value)}</div>
+                      <div className="shrink-0 text-right font-semibold tabular-nums text-cyan-accent">{fmtMoney(b.value)}</div>
                     </div>
                   </Card>
                 ))}
@@ -883,9 +899,9 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                     {balanceBreakdown.map((b: any, i: number) => (
                       <tr key={i}>
                         <td className="td text-slate-200">{b.currency}</td>
-                        <td className="td font-mono text-slate-300">{fmtNum(b.balance)}</td>
-                        <td className="td font-mono text-slate-400">{b.cpp ? `${b.cpp}c` : "-"}</td>
-                        <td className="td font-mono text-slate-200">{fmtMoney(b.value)}</td>
+                        <td className="td tabular-nums text-slate-300">{fmtNum(b.balance)}</td>
+                        <td className="td tabular-nums text-slate-400">{b.cpp ? `${b.cpp}c` : "-"}</td>
+                        <td className="td font-semibold tabular-nums text-slate-200">{fmtMoney(b.value)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -900,15 +916,31 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
             title="Cards"
             subtitle="Detailed held-card records. Last 4 and credit limit are encrypted at rest."
             right={
-              <button
-                className="btn-primary w-full justify-center sm:w-auto"
-                onClick={() => {
-                  setEditing(null);
-                  setFormOpen(true);
-                }}
-              >
-                Add card
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex rounded-lg border border-ink-400/70 bg-ink-900 p-1 text-xs">
+                  <button
+                    className={`rounded-md px-2 py-1 font-medium ${!showArchivedCards ? "bg-ink-600 text-cyan-accent" : "text-slate-400"}`}
+                    onClick={() => setShowArchivedCards(false)}
+                  >
+                    Active {activeProfileCards.length}
+                  </button>
+                  <button
+                    className={`rounded-md px-2 py-1 font-medium ${showArchivedCards ? "bg-ink-600 text-cyan-accent" : "text-slate-400"}`}
+                    onClick={() => setShowArchivedCards(true)}
+                  >
+                    Closed {archivedProfileCards.length}
+                  </button>
+                </div>
+                <button
+                  className="btn-primary w-full justify-center sm:w-auto"
+                  onClick={() => {
+                    setEditing(null);
+                    setFormOpen(true);
+                  }}
+                >
+                  Add card
+                </button>
+              </div>
             }
           />
 
@@ -928,94 +960,138 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
             <Banner kind="info">No personal-credit-reporting cards in the trailing 24 months.</Banner>
           )}
 
-          {cards.length === 0 ? (
-            <EmptyState title="No cards yet" hint="Add a held card to start tracking eligibility and deadlines." />
+          {visibleProfileCards.length === 0 ? (
+            <EmptyState
+              title={showArchivedCards ? "No closed cards" : "No active cards"}
+              hint={showArchivedCards ? "Closed or cancelled cards will appear here." : "Add a held card to start tracking eligibility and deadlines."}
+            />
           ) : (
             <>
               <div className="soft-scroll mt-4 max-h-[56vh] space-y-1 pr-1 md:hidden">
-                {cards.map((c) => (
-                  <Card key={c.id} className="space-y-1 px-2.5 py-1.5">
+                {visibleProfileCards.map((c) => {
+                  const expanded = Boolean(expandedCards[c.id]);
+                  return (
+                  <Card
+                    key={c.id}
+                    className="cursor-pointer space-y-1 px-2.5 py-1.5 transition-colors hover:border-ink-400"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setExpandedCards((prev) => ({ ...prev, [c.id]: !prev[c.id] }))}
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="truncate text-[13px] font-medium leading-5 text-slate-100">{cardName(c)}</div>
                         <div className="text-[11px] text-slate-500">{c.issuer} - {c.ownership}</div>
                       </div>
-                      <span className="shrink-0 text-xs text-slate-300">{c.status}</span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span className="text-xs text-slate-300">{c.status}</span>
+                        <span className={`text-lg text-slate-500 transition-transform ${expanded ? "rotate-90" : ""}`}>&rsaquo;</span>
+                      </div>
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
                       <span>Last 4 {c.last4 ? `..${c.last4}` : "none"}</span>
                       <span>Opened {c.date_opened}</span>
                       <span>Renewal {c.renewal_date ?? "none"}</span>
-                      <span>Limit {fmtMoney(c.credit_limit)}</span>
+                      <span>{five24CardStatusLabel(c)}</span>
                     </div>
-                    <div className="line-clamp-1 text-[11px] leading-tight text-slate-300">
-                      Min spend: {c.min_spend_requirement ? `${fmtMoney(c.min_spend_progress ?? 0)} / ${fmtMoney(c.min_spend_requirement)}` : "none"}
-                      <span className="text-slate-500"> | </span>
-                      Bonus: {bonusText(c)}
-                    </div>
-                    <CardActions
-                      card={c}
-                      className="border-t border-ink-500/60 pt-1.5"
-                      onEdit={() => {
-                        setEditing(c);
-                        setFormOpen(true);
-                      }}
-                      onStatus={onStatusCard}
-                      onDelete={onDeleteCard}
-                    />
+                    {expanded && (
+                      <div className="space-y-2 border-t border-ink-500/60 pt-2">
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                          <span>Limit</span><span className="text-slate-300">{fmtMoney(c.credit_limit)}</span>
+                          <span>Min spend</span><span className="text-slate-300">{c.min_spend_requirement ? `${fmtMoney(c.min_spend_progress ?? 0)} / ${fmtMoney(c.min_spend_requirement)}` : "none"}</span>
+                          <span>Deadline</span><span className="text-slate-300">{c.min_spend_completed ? "complete" : c.min_spend_deadline ?? "none"}</span>
+                          <span>Bonus</span><span className="text-slate-300">{bonusText(c)}</span>
+                          <span>Credit report</span><span className="text-slate-300">{five24CardStatusLabel(c)}</span>
+                        </div>
+                        {c.notes && <div className="text-[11px] text-slate-500">{c.notes}</div>}
+                        <CardActions
+                          card={c}
+                          className="border-t border-ink-500/60 pt-1.5"
+                          onEdit={() => {
+                            setEditing(c);
+                            setFormOpen(true);
+                          }}
+                          onStatus={onStatusCard}
+                          onDelete={onDeleteCard}
+                        />
+                      </div>
+                    )}
                   </Card>
-                ))}
+                )})}
               </div>
               <div className="soft-scroll mt-4 hidden max-h-[620px] space-y-2 pr-1 md:block">
-                {cards.map((c) => (
-                  <Card key={c.id} className="px-3 py-2">
-                    <div className="grid gap-3 lg:grid-cols-[minmax(220px,1.4fr)_minmax(170px,0.8fr)_minmax(220px,1fr)_auto] lg:items-center">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-slate-100">{cardName(c)}</div>
-                        <div className="text-[11px] text-slate-500">{c.issuer} - {c.ownership}</div>
-                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
-                          <span>Last 4 {c.last4 ? `..${c.last4}` : "none"}</span>
-                          <span>Status {c.status}</span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
-                        <span>Opened</span>
-                        <span className="text-slate-300">{c.date_opened}</span>
-                        <span>Renewal</span>
-                        <span className="text-slate-300">{c.renewal_date ?? "none"}</span>
-                        <span>Limit</span>
-                        <span className="font-mono text-slate-300">{fmtMoney(c.credit_limit)}</span>
-                      </div>
-
-                      <div className="text-[11px] text-slate-400">
-                        <div>
-                          Min spend:{" "}
-                          <span className="text-slate-300">
-                            {c.min_spend_requirement ? `${fmtMoney(c.min_spend_progress ?? 0)} / ${fmtMoney(c.min_spend_requirement)}` : "none"}
+                {visibleProfileCards.map((c) => {
+                  const expanded = Boolean(expandedCards[c.id]);
+                  return (
+                  <Card
+                    key={c.id}
+                    className="cursor-pointer px-4 py-3 transition-colors hover:border-ink-400"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setExpandedCards((prev) => ({ ...prev, [c.id]: !prev[c.id] }))}
+                  >
+                    <div className="flex min-w-0 items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="truncate text-sm font-medium text-slate-100">{cardName(c)}</div>
+                          <span className="rounded-md border border-ink-400/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-slate-400">
+                            {c.status}
                           </span>
                         </div>
-                        <div>
-                          Deadline: <span className="text-slate-300">{c.min_spend_completed ? "complete" : c.min_spend_deadline ?? "none"}</span>
-                        </div>
-                        <div>
-                          Bonus: <span className="text-slate-300">{bonusText(c)}</span>
+                        <div className="text-[11px] text-slate-500">{c.issuer} - {c.ownership}</div>
+                        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
+                          <span>Last 4 {c.last4 ? `..${c.last4}` : "none"}</span>
+                          <span>Opened {c.date_opened}</span>
+                          <span>Renewal {c.renewal_date ?? "none"}</span>
+                          <span>Limit {fmtMoney(c.credit_limit)}</span>
+                          <span>{five24CardStatusLabel(c)}</span>
                         </div>
                       </div>
-
-                      <CardActions
-                        card={c}
-                        className="lg:justify-end"
-                        onEdit={() => {
-                          setEditing(c);
-                          setFormOpen(true);
-                        }}
-                        onStatus={onStatusCard}
-                        onDelete={onDeleteCard}
-                      />
+                      <span className={`shrink-0 text-xl text-slate-500 transition-transform ${expanded ? "rotate-90" : ""}`}>&rsaquo;</span>
                     </div>
+
+                    {expanded && (
+                      <div className="mt-3 border-t border-ink-500/60 pt-3">
+                        <div className="grid gap-3 text-[11px] text-slate-400 lg:grid-cols-4">
+                          <div>
+                            <div className="text-slate-500">Min spend</div>
+                            <div className="mt-0.5 text-slate-300">
+                              {c.min_spend_requirement ? `${fmtMoney(c.min_spend_progress ?? 0)} / ${fmtMoney(c.min_spend_requirement)}` : "none"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-slate-500">Deadline</div>
+                            <div className="mt-0.5 text-slate-300">{c.min_spend_completed ? "complete" : c.min_spend_deadline ?? "none"}</div>
+                          </div>
+                          <div>
+                            <div className="text-slate-500">Bonus</div>
+                            <div className="mt-0.5 text-slate-300">{bonusText(c)}</div>
+                          </div>
+                          <div>
+                            <div className="text-slate-500">Credit report</div>
+                            <div className="mt-0.5 text-slate-300">{five24CardStatusLabel(c)}</div>
+                          </div>
+                        </div>
+                        {c.my_targeted_offer_points || c.notes ? (
+                          <div className="mt-2 text-[11px] text-slate-500">
+                            {c.my_targeted_offer_points ? <span>Targeted offer {fmtNum(c.my_targeted_offer_points)} pts. </span> : null}
+                            {c.notes}
+                          </div>
+                        ) : null}
+                        <CardActions
+                          card={c}
+                          className="mt-3 border-t border-ink-500/60 pt-2"
+                          onEdit={() => {
+                            setEditing(c);
+                            setFormOpen(true);
+                          }}
+                          onStatus={onStatusCard}
+                          onDelete={onDeleteCard}
+                        />
+                      </div>
+                    )}
                   </Card>
-                ))}
+                )})}
               </div>
             </>
           )}
@@ -1031,6 +1107,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
         onSubmit={onSubmitCard}
         user={user}
         catalog={catalog}
+        references={references}
         initial={editing}
       />
     </div>
@@ -1065,25 +1142,55 @@ function CardActions({
   const cancelPending = card.status === "Cancel Pending";
 
   return (
-    <div className={`flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs ${className}`}>
-      <button className="text-slate-400 hover:text-cyan-accent" onClick={onEdit}>
+    <div className={`flex flex-wrap items-center justify-start gap-2 text-xs ${className}`}>
+      <button
+        className="rounded-md border border-ink-400/70 px-2 py-1 text-slate-400 hover:border-cyan-accent/50 hover:text-cyan-accent"
+        onClick={(event) => {
+          event.stopPropagation();
+          onEdit();
+        }}
+      >
         edit
       </button>
       {!closed && !cancelPending && (
-        <button className="text-slate-400 hover:text-amber-300" onClick={() => onStatus(card, "Cancel Pending")}>
+        <button
+          className="rounded-md border border-ink-400/70 px-2 py-1 text-slate-400 hover:border-amber-300/50 hover:text-amber-300"
+          onClick={(event) => {
+            event.stopPropagation();
+            onStatus(card, "Cancel Pending");
+          }}
+        >
           plan cancel
         </button>
       )}
       {!closed ? (
-        <button className="text-slate-400 hover:text-pink-accent" onClick={() => onStatus(card, "Closed")}>
+        <button
+          className="rounded-md border border-ink-400/70 px-2 py-1 text-slate-400 hover:border-pink-accent/50 hover:text-pink-accent"
+          onClick={(event) => {
+            event.stopPropagation();
+            onStatus(card, "Closed");
+          }}
+        >
           mark cancelled
         </button>
       ) : (
-        <button className="text-slate-400 hover:text-emerald-300" onClick={() => onStatus(card, "Active")}>
+        <button
+          className="rounded-md border border-ink-400/70 px-2 py-1 text-slate-400 hover:border-emerald-300/50 hover:text-emerald-300"
+          onClick={(event) => {
+            event.stopPropagation();
+            onStatus(card, "Active");
+          }}
+        >
           reopen
         </button>
       )}
-      <button className="text-slate-500 hover:text-pink-accent" onClick={() => onDelete(card)}>
+      <button
+        className="rounded-md border border-ink-400/70 px-2 py-1 text-slate-500 hover:border-pink-accent/50 hover:text-pink-accent"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete(card);
+        }}
+      >
         delete
       </button>
     </div>

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type CatalogEntry, type HeldCard, type ProfileSummary } from "../lib/api";
+import { api, type CardReference, type CatalogEntry, type HeldCard, type ProfileSummary } from "../lib/api";
 import type { Flash } from "../App";
 import { Card, EmptyState, Modal, Spinner, cardName, fmtMoney, fmtNum } from "../components/ui";
 import { CardForm } from "../components/CardForm";
+import { buildCurrencyOptions } from "../lib/currencies";
+import { five24CardStatusLabel } from "../lib/five24";
 
 const CATEGORY_ORDER = ["Dining", "Groceries", "Travel", "Everyday", "Gas"];
 
@@ -24,16 +26,12 @@ function shortDate(value: string | null | undefined) {
   return value.length >= 10 ? value.slice(5, 10) : value;
 }
 
+function isArchivedCard(card: HeldCard) {
+  return ["closed", "cancelled", "canceled"].includes(String(card.status || "").toLowerCase());
+}
+
 function currencyOptions(profile: ProfileSummary | null, cards: HeldCard[], catalog: CatalogEntry[]) {
-  const values = new Set<string>();
-  Object.keys(profile?.point_balances ?? {}).forEach((c) => values.add(c));
-  cards.forEach((c) => {
-    if (c.bonus_currency) values.add(c.bonus_currency);
-  });
-  catalog.forEach((c) => {
-    if (c.currency) values.add(c.currency);
-  });
-  return Array.from(values).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return buildCurrencyOptions({ profile, cards, catalog });
 }
 
 export function MobileProfile({
@@ -48,9 +46,11 @@ export function MobileProfile({
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [cards, setCards] = useState<HeldCard[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [references, setReferences] = useState<CardReference[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [expandedCards, setExpandedCards] = useState<Record<number, boolean>>({});
+  const [showArchivedCards, setShowArchivedCards] = useState(false);
   const [cardFormOpen, setCardFormOpen] = useState(false);
   const [editingCard, setEditingCard] = useState<HeldCard | null>(null);
   const [balanceModalOpen, setBalanceModalOpen] = useState(false);
@@ -59,11 +59,12 @@ export function MobileProfile({
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.profile(user), api.cards(user), api.catalog(user)])
-      .then(([p, held, cat]) => {
+    Promise.all([api.profile(user), api.cards(user), api.catalog(user), api.cardReferences()])
+      .then(([p, held, cat, refs]) => {
         setProfile(p);
         setCards(held);
         setCatalog(cat);
+        setReferences(refs);
       })
       .catch((e) => flash("error", e.message))
       .finally(() => setLoading(false));
@@ -139,7 +140,9 @@ export function MobileProfile({
   if (loading && !profile) return <Spinner />;
 
   const f24 = profile?.five_24;
-  const activeCards = cards.filter((c) => c.status !== "Closed" && c.status !== "Cancelled");
+  const activeCards = cards.filter((c) => !isArchivedCard(c));
+  const archivedCards = cards.filter(isArchivedCard);
+  const visibleCards = showArchivedCards ? archivedCards : activeCards;
 
   return (
     <div className="space-y-4">
@@ -162,17 +165,30 @@ export function MobileProfile({
 
       <section className="space-y-2">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-100">Owned Cards</h2>
+          <h2 className="text-sm font-semibold text-slate-100">{showArchivedCards ? "Archived Cards" : "Owned Cards"}</h2>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-500">{activeCards.length} active</span>
+            <span className="text-xs text-slate-500">
+              {showArchivedCards ? `${archivedCards.length} closed` : `${activeCards.length} active`}
+            </span>
+            {archivedCards.length > 0 && (
+              <button
+                className={`btn-ghost h-7 px-2 text-xs ${showArchivedCards ? "text-cyan-accent" : ""}`}
+                onClick={() => setShowArchivedCards((prev) => !prev)}
+              >
+                {showArchivedCards ? "Active" : "Archive"}
+              </button>
+            )}
             <button className="mobile-owned-add-button btn-success h-7 px-2 text-xs" onClick={openAddCard}>+</button>
           </div>
         </div>
-        {activeCards.length === 0 ? (
-          <EmptyState title="No cards on file" hint="Add held cards from Card Plan." />
+        {visibleCards.length === 0 ? (
+          <EmptyState
+            title={showArchivedCards ? "No archived cards" : "No cards on file"}
+            hint={showArchivedCards ? "Closed cards will appear here." : "Add held cards from Discover."}
+          />
         ) : (
           <div className="space-y-2">
-            {activeCards.map((card) => {
+            {visibleCards.map((card) => {
               const isOpen = Boolean(expandedCards[card.id]);
               return (
                 <Card key={card.id} className="p-0">
@@ -191,6 +207,7 @@ export function MobileProfile({
                         <div>Opened {shortDate(card.date_opened)}</div>
                         <div>{card.renewal_date ? `Renewal ${shortDate(card.renewal_date)}` : card.status}</div>
                         <div>{card.annual_fee ? `Fee ${fmtMoney(card.annual_fee)}` : "No fee"}</div>
+                        <div>{five24CardStatusLabel(card).replace("5/24: ", "")}</div>
                       </div>
                       <span className={`text-lg text-slate-500 transition-transform ${isOpen ? "rotate-90" : ""}`}>&rsaquo;</span>
                     </div>
@@ -204,6 +221,7 @@ export function MobileProfile({
                         <Detail label="Annual Fee" value={card.annual_fee ? fmtMoney(card.annual_fee) : "None"} />
                         <Detail label="Bonus" value={bonusLine(card)} />
                         <Detail label="Min Spend" value={minSpendLine(card)} />
+                        <Detail label="Credit Report" value={five24CardStatusLabel(card)} />
                         <Detail label="Eligible Again" value={card.bonus_eligible_again ? (card.eligible_again_date || "Yes") : "No"} />
                         <Detail label="Targeted" value={card.my_targeted_offer_points ? `${fmtNum(card.my_targeted_offer_points)} pts` : "-"} />
                       </div>
@@ -327,6 +345,7 @@ export function MobileProfile({
         onSubmit={saveHeldCard}
         user={user}
         catalog={catalog}
+        references={references}
         initial={editingCard}
       />
     </div>

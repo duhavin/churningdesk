@@ -1,11 +1,11 @@
-# Churn Project Primer
+# WEwards Project Primer
 
 > Read this when starting a new session, onboarding to the codebase, or answering
 > "what is this project and how should I work on it?"
 
-## 1. What Churn Is
+## 1. What WEwards Is
 
-Churn is a local FastAPI + React application for User A and User B's household
+WEwards is a local FastAPI + React application for User A and User B's household
 credit-card churning decisions. It combines private household state with public
 card data to recommend the best next actions.
 
@@ -39,7 +39,9 @@ The app is a decision engine with a human final check, not an autopilot.
 - PUBLIC and PRIVATE data stay separated.
 - PRIVATE data stays encrypted at rest and never enters ingestion/LLM flows.
 - Public offer values require provenance.
-- Major extracted changes go through `ProposedChange` review.
+- Ambiguous or untrusted major extracted changes go through `ProposedChange`
+  review; high-confidence official product-page current offer terms can update
+  automatically with evidence.
 - Web search is cached last resort, not routine.
 - Additive schema changes go through `backend/db.py::_ADDED_COLUMNS`.
 

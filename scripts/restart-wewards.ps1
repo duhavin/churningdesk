@@ -15,7 +15,7 @@ $ManagedPorts = @($BackendPort, $FrontendPort) + $OldBackendPorts
 $Stopped = New-Object System.Collections.Generic.HashSet[int]
 
 function Write-Step($Message) {
-    Write-Host "[churn-restart] $Message"
+    Write-Host "[wewards-restart] $Message"
 }
 
 function Normalize-ProcessPathEnv {
@@ -118,7 +118,7 @@ function Stop-ProjectProcesses {
         ($_.Name -like "*python*" -or $_.Name -like "*node*") -and $cmd.Contains($rootText)
     })
     foreach ($proc in $direct) {
-        Stop-Pid -ProcessId ([int]$proc.ProcessId) -Reason "Churn process"
+        Stop-Pid -ProcessId ([int]$proc.ProcessId) -Reason "WEwards process"
     }
 
     $listeners = @(Get-Listeners -Ports $ManagedPorts)
@@ -144,9 +144,9 @@ function Stop-ProjectProcesses {
         if ($isFrontend -or $isBackend -or $isOldBackend) {
             Stop-Pid -ProcessId $ownerProcessId -Reason "managed listener on port $($listener.LocalPort)"
         } elseif ($listener.LocalPort -eq $BackendPort) {
-            throw "Port $BackendPort is owned by PID $ownerProcessId, but it is not a Churn process. CommandLine: $cmd"
+            throw "Port $BackendPort is owned by PID $ownerProcessId, but it is not a WEwards process. CommandLine: $cmd"
         } elseif ($listener.LocalPort -eq $FrontendPort) {
-            throw "Port $FrontendPort is owned by PID $ownerProcessId, but it is not the Churn Vite process. CommandLine: $cmd"
+            throw "Port $FrontendPort is owned by PID $ownerProcessId, but it is not the WEwards Vite process. CommandLine: $cmd"
         }
     }
 }
@@ -194,7 +194,7 @@ function Assert-FinalListeners {
     Write-Step "final listeners: backend $BackendPort PID $($backend[0].OwningProcess), frontend $FrontendPort PID $($frontend[0].OwningProcess)"
 }
 
-Write-Step "cleaning Churn processes and managed ports"
+Write-Step "cleaning WEwards processes and managed ports"
 Normalize-ProcessPathEnv
 Stop-ProjectProcesses
 Start-Sleep -Seconds 1
@@ -240,8 +240,8 @@ try {
 }
 
 Write-Step "starting frontend on $FrontendPort"
-$env:CHURN_API_TARGET = "http://127.0.0.1:$BackendPort"
-$env:CHURN_FRONTEND_PORT = "$FrontendPort"
+$env:WEWARDS_API_TARGET = "http://127.0.0.1:$BackendPort"
+$env:WEWARDS_FRONTEND_PORT = "$FrontendPort"
 Start-Process -FilePath $Node `
     -ArgumentList ".\serve-dist.mjs" `
     -WorkingDirectory $FrontendDir `

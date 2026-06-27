@@ -1,4 +1,4 @@
-# AGENTS.md - Churn (two-person churning decision engine)
+# AGENTS.md - WEwards (two-person churning decision engine)
 
 > ## READ BEFORE YOU CODE
 > Before writing or editing code, read this file, `CLAUDE.md`,
@@ -11,8 +11,30 @@
 ## Workspace Boundary
 
 - Work only in `<repo-root>`.
-- A separate app exists at `<separate-churn-control-repo>`. Never edit
+- A separate app exists at `<separate-wewards-control-repo>`. Never edit
   it or treat it as a target unless explicitly asked.
+
+## Project Mode And Git Workflow
+
+Project mode: `personal-standard`.
+
+After Davin approves implementation work in this repo, run the relevant
+verification and sanitize/security preflight. Commit, push, tag, remote rename,
+deployment, dependency installs, and global config changes still require
+explicit approval.
+
+Do not commit or push when:
+
+- secrets, `.env` values, private data, local databases, logs, browser
+  profiles, generated media, virtual environments, dependency folders, or
+  unrelated user work would be included,
+- critical verification fails,
+- scope is unclear,
+- the change touches `<separate-wewards-control-repo>`,
+- Davin has not explicitly approved the Git operation.
+
+Tags are not required for every WEwards commit unless Davin asks for a
+version/checkpoint/release tag or this project's docs later require one.
 
 ## What This Is
 
@@ -27,6 +49,7 @@ accurate data in, optimal explainable actions out.
 
 - `CLAUDE.md` - session operating contract for Claude/Codex.
 - `docs/PROJECT_PRIMER.md` - single-doc mental model.
+- `docs/CURRENT_STATE.md` - active project mode, paths, run commands, and Git policy.
 - `docs/PROJECT_EVOLUTION.md` - living audit/change/revert ledger.
 - `docs/AUDIT_PROMPT.md` - reusable full-codebase audit protocol.
 - `docs/NEXT_TASKS.md` - current priorities and deferred work.
@@ -49,7 +72,7 @@ accurate data in, optimal explainable actions out.
 4. PUBLIC/PRIVATE firewall is mandatory.
 5. Unknown/unsupported data becomes `NEEDS DATA`, never a fabricated value.
 6. Public current offers, public peaks, targeted offers, and targeted highs stay separate.
-7. Review queue protects large offer changes and eligibility-rule changes.
+7. Review queue protects ambiguous/untrusted large offer changes and eligibility-rule changes; high-confidence official product-page current offer terms may auto-adopt with evidence.
 8. Web search is cached last resort, not routine refresh.
 9. Additive DB columns belong in `backend/db.py::_ADDED_COLUMNS`.
 10. Every meaningful change gets a `docs/PROJECT_EVOLUTION.md` entry.

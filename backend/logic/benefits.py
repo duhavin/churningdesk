@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config, models
-from ..benefit_normalization import normalize_public_benefits
+from ..benefit_normalization import is_benefit_noise, normalize_public_benefits
 from ..crypto import MissingKeyError
 from ..product_identity import product_display_name, product_variant_key
 from .decision_context import DecisionContext, key
@@ -397,6 +397,8 @@ def _is_trackable_benefit(name: str, value: Any, description: Any) -> bool:
     text = " ".join(str(part or "") for part in (name, value, description)).strip()
     if not text:
         return False
+    if is_benefit_noise(text):
+        return False
     low = text.lower()
     noise_tokens = (
         "[json-ld]",
@@ -415,6 +417,13 @@ def _is_trackable_benefit(name: str, value: Any, description: Any) -> bool:
         "does not include",
         "don't include",
         "not include",
+        "while we don't cover all available",
+        "we don't cover all available",
+        "editorial content is not influenced",
+        "not influenced by nor subject to review",
+        "subject to review by any credit card company",
+        "credit card company, bank or partner",
+        "our editorial team creates and maintains",
         "pay over time",
         "payment plan",
         "at checkout",

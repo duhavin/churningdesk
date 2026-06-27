@@ -1,12 +1,12 @@
-# Churn
+# WEwards
 
-Churn is a local two-user credit-card churning decision engine. It combines user-entered private household state with sourced public card data to recommend the best next actions: apply, wait, refer, renew, downgrade, cancel, use a specific card, or mark data as needing review.
+WEwards is a local two-user credit-card churning decision engine. It combines user-entered private household state with sourced public card data to recommend the best next actions: apply, wait, refer, renew, downgrade, cancel, use a specific card, or mark data as needing review.
 
 This repository is intended to ship as application code only. It does not include a populated SQLite database, `.env`, API keys, browser profiles, local caches, runtime logs, or personal account data.
 
 ## Core Idea
 
-Most rewards apps optimize cards already in a wallet. Churn is focused on household strategy:
+Most rewards apps optimize cards already in a wallet. WEwards is focused on household strategy:
 
 - Which user should apply next.
 - Whether the route should be direct or through the other user's referral.
@@ -102,7 +102,7 @@ npm run build
 Windows restart helper:
 
 ```powershell
-.\scripts\restart-churn.ps1
+.\scripts\restart-wewards.ps1
 ```
 
 ## Repository Hygiene

@@ -343,6 +343,171 @@ class IngestionGuardTests(unittest.TestCase):
         self.assertIsNone(product.annual_fee)
         self.assertEqual(product.current_offer_points, 200000)
 
+    def test_official_product_page_large_current_offer_delta_auto_commits(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Chase",
+            product_name="Chase Sapphire Reserve for Business Credit Card",
+            currency="Chase Ultimate Rewards",
+            current_offer_points=100000,
+            current_offer_min_spend=5000,
+            current_offer_window_months=3,
+            annual_fee=795,
+            peak_offer_points=100000,
+            source_url="https://creditcards.chase.com/business-credit-cards/sapphire/reserve",
+            last_verified=dt.datetime(2026, 6, 1),
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.92,
+            issuer="Chase",
+            card_name="Chase Sapphire Reserve for Business Credit Card",
+            currency="Chase Ultimate Rewards",
+            current_offer_points=200000,
+            current_offer_min_spend=30000,
+            current_offer_window_months=6,
+            annual_fee=795,
+            offer_status="public",
+            source_url="https://creditcards.chase.com/business-credit-cards/sapphire/reserve",
+            evidence_snippets={
+                "current_offer_points": ["Chase Sapphire Reserve for Business: earn 200,000 bonus points."],
+                "current_offer_min_spend": ["after you spend $30,000 in the first 6 months"],
+                "current_offer_window_months": ["after you spend $30,000 in the first 6 months"],
+                "annual_fee": ["The annual fee is $795."],
+            },
+        )
+
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+
+        self.assertIn("current_offer_points", result["committed"])
+        self.assertIn("current_offer_min_spend", result["committed"])
+        self.assertIn("current_offer_window_months", result["committed"])
+        self.assertEqual([], result["proposed"])
+        self.assertEqual(product.current_offer_points, 200000)
+        self.assertEqual(product.current_offer_min_spend, 30000)
+        self.assertEqual(product.current_offer_window_months, 6)
+        self.assertEqual(product.peak_offer_points, 200000)
+        self.assertEqual([], db.scalars(select(models.ProposedChange)).all())
+
+    def test_broad_roundup_large_current_offer_delta_still_queues_review(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Chase",
+            product_name="Chase Sapphire Reserve for Business Credit Card",
+            currency="Chase Ultimate Rewards",
+            current_offer_points=100000,
+            current_offer_min_spend=5000,
+            current_offer_window_months=3,
+            annual_fee=795,
+            peak_offer_points=100000,
+            source_url="https://creditcards.chase.com/business-credit-cards/sapphire/reserve",
+            last_verified=dt.datetime(2026, 6, 1),
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        row = extract.OfferScanRow(
+            issuer="Chase",
+            card_name="Chase Sapphire Reserve for Business Credit Card",
+            source_url="https://www.doctorofcredit.com/best-current-credit-card-sign-bonuses/",
+            offer_status="public",
+            confidence=0.92,
+            found=True,
+            bonus_amount=200000,
+            bonus_unit="points",
+            spend_requirement=30000,
+            spend_window_months=6,
+            evidence_snippets={
+                "bonus_amount": ["Chase Sapphire Reserve for Business: 200,000 points."],
+                "spend_requirement": ["Spend $30,000 in 6 months."],
+            },
+        )
+
+        result = schedule._apply_scan_row(db, product, row)
+
+        self.assertIn("current_offer_points", result["proposed"])
+        self.assertEqual(product.current_offer_points, 100000)
+        pending = db.scalars(select(models.ProposedChange)).all()
+        self.assertTrue(any(change.field == "current_offer_points" for change in pending))
+
+    def test_cross_product_source_cannot_write_or_replace_product_truth(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="American Express",
+            product_name="American Express Business Gold Card",
+            currency="Amex Membership Rewards",
+            source_url="https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-business-gold-card/",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.95,
+            issuer="American Express",
+            card_name="American Express Business Gold Card",
+            current_offer_points=75000,
+            current_offer_min_spend=6000,
+            annual_fee=150,
+            offer_status="public",
+            source_url="https://www.doctorofcredit.com/american-express-delta-gold-50000-miles-400-statement-credit",
+            evidence_snippets={
+                "current_offer_points": ["Delta Gold: 75,000 SkyMiles after spend."],
+                "annual_fee": ["Delta Gold annual fee is $150."],
+            },
+        )
+
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+
+        self.assertNotIn("current_offer_points", result["committed"])
+        self.assertNotIn("annual_fee", result["committed"])
+        self.assertIsNone(product.current_offer_points)
+        self.assertIsNone(product.annual_fee)
+        self.assertEqual(
+            product.source_url,
+            "https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-business-gold-card/",
+        )
+
+    def test_targeted_trusted_source_still_does_not_write_public_current_offer(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Chase",
+            product_name="Chase Sapphire Preferred Card",
+            currency="Chase Ultimate Rewards",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.95,
+            issuer="Chase",
+            card_name="Chase Sapphire Preferred Card",
+            current_offer_points=120000,
+            current_offer_min_spend=5000,
+            current_offer_window_months=3,
+            is_targeted=True,
+            offer_status="targeted",
+            source_url="https://creditcards.chase.com/rewards-credit-cards/sapphire/preferred",
+            evidence_snippets={
+                "current_offer_points": ["Targeted offer: earn 120,000 points."],
+            },
+        )
+
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+
+        self.assertNotIn("current_offer_points", result["committed"])
+        self.assertIn("targeted_peak_offer_points", result["committed"])
+        self.assertIsNone(product.current_offer_points)
+        self.assertEqual(product.targeted_peak_offer_points, 120000)
+
     def test_anniversary_bonus_snippet_cannot_write_current_welcome_offer(self):
         db = self._session()
         product = models.CardProduct(
@@ -435,6 +600,55 @@ class IngestionGuardTests(unittest.TestCase):
         self.assertFalse(schedule._needs_public_data_backfill(product, held_for_benefit_backfill=False))
         self.assertTrue(schedule._needs_public_data_backfill(product, held_for_benefit_backfill=True))
 
+    def test_official_closed_to_new_page_marks_product_ineligible_and_clears_current_offer(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Citi",
+            product_name="Citi Custom Cash Card",
+            currency="cash back",
+            current_offer_cash=200,
+            current_offer_min_spend=1500,
+            current_offer_window_months=6,
+            peak_offer_points=None,
+            source_url="https://www.citi.com/credit-cards/citi-custom-cash-credit-card",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        row = extract.OfferScanRow(
+            issuer="Citi",
+            card_name="Citi Custom Cash Card",
+            source_url="https://www.citi.com/credit-cards/citi-custom-cash-credit-card",
+            product_url="https://www.citi.com/credit-cards/citi-custom-cash-credit-card",
+            offer_status="expired",
+            confidence=0.92,
+            found=True,
+            eligibility_tags=["closed_to_new_applicants"],
+            eligibility_language="Citi stopped accepting applications for this card on May 28, 2026.",
+            evidence_snippets={
+                "eligibility_language": [
+                    "Citi stopped accepting applications for this card on May 28, 2026."
+                ],
+            },
+        )
+
+        result = schedule._apply_scan_row(db, product, row)
+        eligibility_result = eligibility.eligibility(
+            db,
+            "User A",
+            product.issuer,
+            product.product_name,
+            eligibility_tags=product.eligibility_tags,
+        )
+
+        self.assertIn("eligibility_tags", result["committed"])
+        self.assertIn("closed_to_new_applicants", product.eligibility_tags)
+        self.assertIsNone(product.current_offer_cash)
+        self.assertIsNone(product.current_offer_min_spend)
+        self.assertFalse(eligibility_result.eligible)
+        self.assertEqual(eligibility_result.block_type, "permanent")
+
     def test_supplemental_search_has_separate_cooldown(self):
         old_days = config.SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS
         config.SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS = 14
@@ -526,10 +740,14 @@ class IngestionGuardTests(unittest.TestCase):
             ("American Express", "The Business Platinum Card from American Express", "Amex Business Platinum"),
             ("Chase", "Chase Sapphire Preferred Card", "Sapphire Preferred"),
             ("Chase", "Chase Sapphire Reserve", "Sapphire Reserve"),
+            ("Chase", "Chase Sapphire Reserve for Business Credit Card", "Sapphire Reserve Business"),
             ("Chase", "Chase Freedom Unlimited Credit Card", "Freedom Unlimited"),
             ("Capital One", "Capital One Venture X Rewards Credit Card", "Venture X"),
             ("Capital One", "Capital One Venture Rewards Credit Card", "Venture"),
             ("Capital One", "Capital One Venture X Business", "Venture X Business"),
+            ("Bilt", "Bilt Blue Card", "Bilt Blue"),
+            ("Bilt", "Bilt Obsidian Card", "Bilt Obsidian"),
+            ("Bilt", "Bilt Palladium Card", "Bilt Palladium"),
             ("American Express", "Delta SkyMiles Gold American Express Card", "Delta Gold"),
             ("Chase", "Marriott Bonvoy Boundless Credit Card", "Marriott Boundless"),
         ]
@@ -580,15 +798,25 @@ class IngestionGuardTests(unittest.TestCase):
             issuer="Capital One",
             product_name="Venture Rewards Credit Card",
             currency="Capital One Miles",
+            annual_fee=95,
             current_offer_points=75000,
+            current_offer_min_spend=4000,
+            current_offer_window_months=3,
             peak_offer_points=75000,
+            source_url="https://www.capitalone.com/credit-cards/venture/",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
         )
         venture_x = models.CardProduct(
             issuer="Capital One",
             product_name="Venture X Rewards Credit Card",
             currency="Capital One Miles",
+            annual_fee=395,
             current_offer_points=75000,
+            current_offer_min_spend=4000,
+            current_offer_window_months=3,
             peak_offer_points=90000,
+            source_url="https://www.capitalone.com/credit-cards/venture-x/",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
         )
         db.add_all(
             [
@@ -625,16 +853,26 @@ class IngestionGuardTests(unittest.TestCase):
             issuer="American Express",
             product_name="American Express Gold Card",
             currency="Amex Membership Rewards",
+            annual_fee=325,
             current_offer_points=60000,
+            current_offer_min_spend=6000,
+            current_offer_window_months=6,
             peak_offer_points=100000,
+            source_url="https://www.americanexpress.com/us/credit-cards/card/gold-card/",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
         )
         business_gold = models.CardProduct(
             issuer="American Express",
             product_name="American Express Business Gold Card",
             ownership="Business",
             currency="Amex Membership Rewards",
+            annual_fee=375,
             current_offer_points=100000,
+            current_offer_min_spend=15000,
+            current_offer_window_months=3,
             peak_offer_points=100000,
+            source_url="https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-business-gold-card/",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
         )
         db.add_all(
             [

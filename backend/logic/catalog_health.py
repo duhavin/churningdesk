@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, source_quality
 from ..product_identity import product_display_name, product_variant_key
 from .catalog import effective_catalog
 
@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from .decision_context import DecisionContext
 
 STALE_SOURCE_DAYS = 30
+UNSAFE_SOURCE_ISSUES = {
+    "source_identity_conflict",
+    "broad_source_not_product_truth",
+    "source_not_product_specific",
+}
 
 
 def _utcnow() -> dt.datetime:
@@ -30,12 +35,11 @@ def _has_current_offer(product: models.CardProduct) -> bool:
     return bool(
         product.current_offer_effective
         or product.current_offer_cash
-        or product.current_offer_min_spend
     )
 
 
 def _has_public_peak(product: models.CardProduct) -> bool:
-    return bool(product.peak_offer_points or product.peak_offer_min_spend)
+    return bool(product.peak_offer_points)
 
 
 def _has_supplemental(product: models.CardProduct) -> bool:
@@ -94,6 +98,8 @@ def _duplicate_variant_counts(db: Session) -> Counter[tuple[str, str]]:
 def _status(issue_codes: set[str]) -> str:
     if "pending_review" in issue_codes:
         return "needs_review"
+    if issue_codes & UNSAFE_SOURCE_ISSUES:
+        return "needs_data"
     if any(code.startswith("missing_") or code == "duplicate_identity" for code in issue_codes):
         return "needs_data"
     if "source_stale" in issue_codes or "never_verified" in issue_codes:
@@ -114,6 +120,10 @@ def _next_action(status: str, issue_codes: set[str], held_users: list[str]) -> s
         return "Add or refresh point valuation."
     if "missing_source" in issue_codes:
         return "Attach a verified product/source URL."
+    if "source_identity_conflict" in issue_codes:
+        return "Replace the conflicting source with the exact issuer product page."
+    if "broad_source_not_product_truth" in issue_codes or "source_not_product_specific" in issue_codes:
+        return "Attach a product-specific issuer/source URL before ranking."
     if status == "stale":
         return "Refresh cached source."
     return "No action."
@@ -163,6 +173,10 @@ def build_catalog_health(db: Session, context: "DecisionContext | None" = None) 
             add("missing_multipliers", "Missing earn/use categories", "medium" if held_users else "low")
         if not product.source_url:
             add("missing_source", "Missing source URL", "medium")
+        else:
+            source_issue = source_quality.source_quality_issue(product.issuer, product.product_name, product.source_url)
+            if source_issue:
+                add(source_issue, source_issue.replace("_", " ").title(), "high")
         if not product.last_verified:
             add("never_verified", "Never verified", "medium")
         elif (now - product.last_verified).days > STALE_SOURCE_DAYS:

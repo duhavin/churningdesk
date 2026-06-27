@@ -96,7 +96,7 @@ def discover_cards(issuers: list[str]) -> list[DiscoveredCard]:
 def research_card_universe(issuers: list[str], max_uses: int | None = None) -> dict[str, Any]:
     """Cited web research for the public card universe.
 
-    This mirrors Churn Control's faster path: one broad search report, then a
+    This mirrors WEwards Control's faster path: one broad search report, then a
     compact structured identity pass. It only handles PUBLIC product identity.
     """
     issuer_scope = ", ".join(issuers)
@@ -381,6 +381,16 @@ _CATEGORY_CANONICAL = {
     "other": "everyday",
 }
 
+BENEFIT_DISCLOSURE_NOISE = (
+    "while we don't cover all available",
+    "we don't cover all available",
+    "editorial content is not influenced",
+    "not influenced by nor subject to review",
+    "subject to review by any credit card company",
+    "credit card company, bank or partner",
+    "our editorial team creates and maintains",
+)
+
 _BENEFIT_NOISE = (
     "[json-ld]",
     "@context",
@@ -398,6 +408,16 @@ _BENEFIT_NOISE = (
     "pricing and terms",
     "to learn more",
     "please visit",
+    "rates and fees",
+    "terms and conditions",
+    "terms apply",
+    "privacy",
+    "cookie",
+    "doesn't include",
+    "does not include",
+    "not all offers",
+    "no longer available",
+    *BENEFIT_DISCLOSURE_NOISE,
 )
 
 

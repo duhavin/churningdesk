@@ -83,7 +83,7 @@ def compute_score(
     )
 
     points_need_valuation = bool(effective_points and cpp <= 0)
-    needs_data = not has_bonus_offer or peak <= 0 or points_need_valuation
+    needs_data = not has_bonus_offer or points_need_valuation
     status = _status(
         product,
         peak_score,
@@ -92,6 +92,7 @@ def compute_score(
         eligibility,
         needs_data,
         value_known=value_known,
+        public_peak_known=public_peak > 0,
     )
 
     return Score(
@@ -126,6 +127,7 @@ def _status(
     eligibility: dict,
     needs_data: bool = False,
     value_known: bool = True,
+    public_peak_known: bool = True,
 ) -> str:
     # 1. future_trip tagged, not yet time
     if product.tag == "future_trip":
@@ -135,9 +137,18 @@ def _status(
     if not eligibility.get("eligible", True):
         return SKIP if eligibility.get("block_type") == "permanent" else WAIT
 
-    # 3. eligible but we can't trust the decision yet (missing offer/peak data)
+    # 3. eligible but we can't trust the current offer/value yet.
     if needs_data:
         return NEEDS_DATA
+
+    # Missing public peak means timing/hotness is unknown, not that a sourced
+    # current offer is unusable. Keep it below APPLY NOW until history is known.
+    if not public_peak_known:
+        if offer_value < 0:
+            return LOW_PRIORITY
+        if value_known and (offer_value >= config.MIN_WATCH_VALUE or effective_points >= config.MIN_APPLY_POINTS):
+            return WATCH
+        return LOW_PRIORITY
 
     # 4-7. eligible — by peak_score
     if offer_value < 0:

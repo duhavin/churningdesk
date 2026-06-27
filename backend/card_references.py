@@ -37,6 +37,9 @@ class CardReferenceSeed:
     benefits_url: str | None = None
     reports_to_personal_credit: bool = True
     trusted_source_urls: tuple[str, ...] = ()
+    active: bool = True
+    eligibility_tags: tuple[str, ...] = ()
+    product_notes: str | None = None
 
 
 REFERENCE_SEEDS: tuple[CardReferenceSeed, ...] = (
@@ -106,6 +109,15 @@ REFERENCE_SEEDS: tuple[CardReferenceSeed, ...] = (
         ("Sapphire Reserve", "CSR"),
         issuer_domain="chase.com",
         issuer_url="https://creditcards.chase.com/rewards-credit-cards/sapphire/reserve",
+    ),
+    CardReferenceSeed(
+        "Chase",
+        "Chase Sapphire Reserve for Business Credit Card",
+        ("Sapphire Reserve Business", "Sapphire Reserve for Business", "CSR Business"),
+        ownership="Business",
+        issuer_domain="chase.com",
+        issuer_url="https://creditcards.chase.com/business-credit-cards/sapphire/reserve",
+        reports_to_personal_credit=False,
     ),
     CardReferenceSeed(
         "Chase",
@@ -209,6 +221,9 @@ REFERENCE_SEEDS: tuple[CardReferenceSeed, ...] = (
         ("Citi Custom Cash", "Custom Cash"),
         issuer_domain="citi.com",
         issuer_url="https://www.citi.com/credit-cards/citi-custom-cash-credit-card",
+        active=False,
+        eligibility_tags=("closed_to_new_applicants",),
+        product_notes="Official Citi page says applications stopped May 28, 2026; keep only for held-card history.",
     ),
     CardReferenceSeed(
         "Citi",
@@ -230,6 +245,27 @@ REFERENCE_SEEDS: tuple[CardReferenceSeed, ...] = (
         ("Wells Fargo Autograph Journey", "Autograph Journey"),
         issuer_domain="wellsfargo.com",
         issuer_url="https://creditcards.wellsfargo.com/autograph-journey-visa-credit-card/",
+    ),
+    CardReferenceSeed(
+        "Bilt",
+        "Bilt Blue Card",
+        ("Bilt Blue", "Bilt Mastercard", "Bilt Rewards Mastercard", "Bilt Card"),
+        issuer_domain="bilt.com",
+        issuer_url="https://www.bilt.com/card",
+    ),
+    CardReferenceSeed(
+        "Bilt",
+        "Bilt Obsidian Card",
+        ("Bilt Obsidian", "Obsidian Card"),
+        issuer_domain="bilt.com",
+        issuer_url="https://www.bilt.com/card",
+    ),
+    CardReferenceSeed(
+        "Bilt",
+        "Bilt Palladium Card",
+        ("Bilt Palladium", "Palladium Card"),
+        issuer_domain="bilt.com",
+        issuer_url="https://www.bilt.com/card",
     ),
     CardReferenceSeed(
         "American Express",
@@ -285,8 +321,14 @@ def _seed_dict(seed: CardReferenceSeed) -> dict:
         "history_url": seed.history_url,
         "benefits_url": seed.benefits_url,
         "trusted_source_urls": list(seed.trusted_source_urls),
+        "active": seed.active,
         "source": "seed",
     }
+
+
+SEED_OBJECTS_BY_KEY = {
+    canonical_product_key(seed.issuer, seed.product_name): seed for seed in REFERENCE_SEEDS
+}
 
 
 SEED_REFERENCES_BY_KEY = {
@@ -295,7 +337,10 @@ SEED_REFERENCES_BY_KEY = {
 
 
 def seed_reference_for_product(issuer: str | None, product_name: str | None) -> dict | None:
-    return SEED_REFERENCES_BY_KEY.get(canonical_product_key(issuer, product_name))
+    reference = SEED_REFERENCES_BY_KEY.get(canonical_product_key(issuer, product_name))
+    if reference and reference.get("active", True):
+        return reference
+    return None
 
 
 def reference_to_dict(reference: models.CardReference) -> dict:
@@ -335,8 +380,8 @@ def get_reference(db: Session, issuer: str | None, product_name: str | None) -> 
 def reference_for_product(db: Session | None, issuer: str | None, product_name: str | None) -> dict | None:
     if db is not None:
         row = get_reference(db, issuer, product_name)
-        if row and row.active:
-            return reference_to_dict(row)
+        if row:
+            return reference_to_dict(row) if row.active else None
     return seed_reference_for_product(issuer, product_name)
 
 
@@ -429,6 +474,9 @@ def seed_card_references(db: Session, *, seed_products: bool = True) -> dict:
                 if getattr(ref, field) in (None, "", [], {}) and data.get(field) not in (None, "", [], {}):
                     setattr(ref, field, data[field])
                     changed = True
+            if ref.active != data.get("active", True):
+                ref.active = data.get("active", True)
+                changed = True
             if changed:
                 updated_refs += 1
 
@@ -436,10 +484,13 @@ def seed_card_references(db: Session, *, seed_products: bool = True) -> dict:
         db.flush()
         existing_variants = _existing_variant_map(db)
         for data in SEED_REFERENCES_BY_KEY.values():
+            seed = SEED_OBJECTS_BY_KEY.get(data["canonical_key"])
             variant = product_variant_key(data["issuer"], data["product_name"])
             if not variant:
                 continue
             product = existing_variants.get(variant)
+            if not data.get("active", True) and product is None:
+                continue
             if product is None:
                 product = models.CardProduct(
                     issuer=data["issuer"],
@@ -449,10 +500,11 @@ def seed_card_references(db: Session, *, seed_products: bool = True) -> dict:
                     account_type=data["account_type"],
                     currency=data["currency"],
                     reports_to_personal_credit=data["reports_to_personal_credit"],
+                    eligibility_tags=list(seed.eligibility_tags) if seed and seed.eligibility_tags else None,
                     tag=reward_tag_for_currency(data["currency"]),
                     added_by="reference_seed",
                     discovery_reviewed=True,
-                    notes="Seeded identity reference; offer fields require sourced refresh.",
+                    notes=seed.product_notes if seed and seed.product_notes else "Seeded identity reference; offer fields require sourced refresh.",
                 )
                 db.add(product)
                 existing_variants[variant] = product
@@ -470,6 +522,25 @@ def seed_card_references(db: Session, *, seed_products: bool = True) -> dict:
                 for field, value in safe_updates.items():
                     if getattr(product, field) in (None, "", [], {}) and value not in (None, "", [], {}):
                         setattr(product, field, value)
+                        changed = True
+                if seed and seed.eligibility_tags:
+                    merged_tags = list(dict.fromkeys([*(product.eligibility_tags or []), *seed.eligibility_tags]))
+                    if product.eligibility_tags != merged_tags:
+                        product.eligibility_tags = merged_tags
+                        changed = True
+                if not data.get("active", True):
+                    for field in (
+                        "current_offer_points",
+                        "current_offer_cash",
+                        "current_offer_min_spend",
+                        "current_offer_window_months",
+                        "current_offer_override",
+                    ):
+                        if getattr(product, field, None) is not None:
+                            setattr(product, field, None)
+                            changed = True
+                    if seed and seed.product_notes and product.notes != seed.product_notes:
+                        product.notes = seed.product_notes
                         changed = True
                 if changed:
                     updated_products += 1

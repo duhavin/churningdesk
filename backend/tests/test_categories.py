@@ -4,12 +4,19 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend import models
+from backend import config, models
 from backend.db import Base
 from backend.logic import categories
 
 
 class CategoryGuideTests(unittest.TestCase):
+    def setUp(self):
+        self._old_users = config.USERS
+        config.USERS = ["User A", "User B"]
+
+    def tearDown(self):
+        config.USERS = self._old_users
+
     def test_everyday_card_covers_missing_category_without_repeating_multiplier(self):
         db = self._session()
         venture = self._product(

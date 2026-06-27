@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from urllib.parse import urlsplit
 
 from .. import config, models, schemas
+from ..benefit_normalization import is_benefit_noise
 from ..db import get_db
 from ..ingestion import validate
 from ..product_identity import canonical_product_key, product_display_name
@@ -68,11 +69,17 @@ def _clean_review_text(value) -> str:
 
 
 def _is_raw_source_fragment(value) -> bool:
+    if is_benefit_noise(value):
+        return True
+    if isinstance(value, dict):
+        name = str(value.get("name") or value.get("benefit") or value.get("title") or "").strip()
+        if name and len(name) <= 96:
+            return False
     low = str(value or "").lower()
     text = str(value or "")
-    if "[text]" in low and len(text) > 220:
+    if "[text]" in low:
         return True
-    if len(text) > 320 and not any(term in low for term in ("credit", "access", "lounge", "bonus", "insurance")):
+    if len(text) > 220:
         return True
     return any(
         token in low

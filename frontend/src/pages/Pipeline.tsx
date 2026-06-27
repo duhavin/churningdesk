@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, type ApiPayload, type CardReference, type CatalogEntry, type HeldAction, type LadderAlternative, type PipelineCard, type PipelineResponse } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtMoney } from "../components/ui";
+import { Banner, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtMoney } from "../components/ui";
 import { CardForm } from "../components/CardForm";
 
 const ACTION_STYLE: Record<string, string> = {
@@ -170,36 +170,12 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
           ) : (
             <div className="soft-scroll max-h-[66vh] space-y-2 pr-1">
               {next.map((c) => (
-                <Card key={c.id} className="flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-start">
-                  <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ink-500 font-mono text-[11px] text-cyan-accent">
-                    {c.rank}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium text-slate-100">{cardName(c)}</span>
-                      <StatusBadge status={c.status} />
-                      {c.is_exceptional && <RareBadge />}
-                      {c.targeted_beats_public && (
-                        <span className="chip bg-pink-accent/15 text-pink-accent">targeted high</span>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-slate-500">
-                      {c.issuer} - {c.ownership}
-                      {c.currency ? ` - ${c.currency}` : ""}
-                    </div>
-                    <div className="line-clamp-2 mt-1 text-xs leading-snug text-slate-400">{c.reason}</div>
-                    <button
-                      className="btn-success mt-2 px-2 py-1 text-xs"
-                      onClick={() => recordApplication(c)}
-                    >
-                      Record application
-                    </button>
-                  </div>
-                  <div className="shrink-0 text-left sm:text-right">
-                    <div className="font-mono text-xs text-slate-200">{fmtMoney(c.offer_value)}</div>
-                    <div className="text-[11px] text-slate-500">peak {c.peak_score}</div>
-                  </div>
-                </Card>
+                <NextRow
+                  key={c.id}
+                  card={c}
+                  applyUrl={applyUrlFor(c.id)}
+                  onRecord={() => recordApplication(c)}
+                />
               ))}
             </div>
           )}
@@ -239,16 +215,7 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
           ) : (
             <div className="soft-scroll max-h-[66vh] space-y-2 pr-1">
               {actions.map((a) => (
-                <Card key={a.id} className="flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-slate-100">{cardName(a)}</div>
-                    <div className="text-[11px] text-slate-500">{a.issuer}</div>
-                    <div className="line-clamp-2 mt-1 text-xs leading-snug text-slate-400">{a.reason}</div>
-                  </div>
-                  <div className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${ACTION_STYLE[a.action] ?? "text-slate-300"}`}>
-                    {actionLabel(a.action)}
-                  </div>
-                </Card>
+                <ActionRow key={a.id} action={a} />
               ))}
             </div>
           )}
@@ -261,6 +228,7 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
         onSubmit={onSubmit}
         user={user}
         catalog={catalog}
+        references={references}
         prefill={prefill}
       />
     </div>

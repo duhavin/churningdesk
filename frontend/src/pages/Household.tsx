@@ -43,6 +43,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
   const [loading, setLoading] = useState(true);
   const [overviewTab, setOverviewTab] = useState<"snapshot" | "use" | "benefits">("snapshot");
   const [collapsedBenefitCategories, setCollapsedBenefitCategories] = useState<Record<string, boolean>>({});
+  const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let alive = true;
@@ -69,9 +70,9 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
   const userNames = users.map((u) => u.user);
   const balanceRows: any[] = data?.balance_rows ?? [];
   const cardSnapshot = data?.card_snapshot ?? {};
-  const moves: any[] = data?.moves ?? [];
+  const moves: any[] = (data?.moves ?? []).filter((m: any) => m.decision_ready !== false);
   const referrals: any[] = (data?.referrals ?? []).filter((r: any) =>
-    ["APPLY NOW", "WATCH"].includes(r.recipient_status),
+    r.decision_ready !== false && ["APPLY NOW", "WATCH"].includes(r.recipient_status),
   );
   const categoryOrder = ["dining", "groceries", "travel", "everyday", "gas"];
   const categoryRows: any[] = [...(categoryGuide?.categories ?? [])].sort((a, b) => {
@@ -193,6 +194,10 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
 
   const toggleBenefitCategory = (id: string) => {
     setCollapsedBenefitCategories((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const toggleAction = (id: string) => {
+    setExpandedActions((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const renderBenefitGroup = (group: any) => (
@@ -346,9 +351,9 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                   <tr key={r.currency}>
                     <td className="td text-slate-200">{r.currency}</td>
                     {userNames.map((n) => (
-                      <td key={n} className="td text-right font-mono text-slate-300">{fmtNum(r.by_user?.[n] ?? 0)}</td>
+                      <td key={n} className="td text-right tabular-nums text-slate-300">{fmtNum(r.by_user?.[n] ?? 0)}</td>
                     ))}
-                    <td className="td text-right font-mono text-cyan-accent">{fmtNum(r.combined)}</td>
+                    <td className="td text-right font-semibold tabular-nums text-cyan-accent">{fmtNum(r.combined)}</td>
                   </tr>
                 ))
               )}
@@ -506,7 +511,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
       )}
 
       {/* Best next applications (both applicants) */}
-      <Card className="order-2 hidden p-0 md:block">
+      <Card className="order-2 hidden p-0 !bg-ink-900/60 md:block">
         <div className="px-4 pt-4 pb-2 font-semibold text-slate-100">Best Household Applications</div>
         {moves.length === 0 ? (
           <EmptyState title="Nothing eligible right now" hint="Run discovery/refresh, or wait for eligibility blocks to clear." />
@@ -528,7 +533,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                 </div>
                 <div className="line-clamp-1 mt-1 text-[11px] leading-tight text-slate-500">{m.reason}</div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
-                  <span>{m.referral_from ? `via ${m.referral_from}` : "Direct"}</span>
+                  <span>{m.route ?? (m.referral_from ? `Refer via ${m.referral_from}` : "Direct application")}</span>
                   <span className="font-semibold text-emerald-300">{householdPointsLabel(m)}</span>
                   <span className="text-slate-500">{fmtMoney(householdValue(m))}</span>
                   <span className="min-w-0 truncate">{offerText(m)}</span>
@@ -537,53 +542,52 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
               </div>
             ))}
           </div>
-            <div className="soft-scroll hidden max-h-[520px] md:block">
-            <table className="w-full">
-            <thead>
-              <tr>
-                <th className="th">Applicant</th>
-                <th className="th">Card</th>
-                <th className="th">Route</th>
-                <th className="th">Current offer</th>
-                <th className="th text-right">Household points</th>
-              </tr>
-            </thead>
-            <tbody>
-              {moves.map((m) => (
-                <tr key={`${m.user}-${m.id}`} className="hover:bg-ink-600/40 align-top">
-                  <td className="td font-medium text-slate-100">{m.user}</td>
-                  <td className="td">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-slate-100">{cardName(m)}</span>
-                      <StatusBadge status={m.status} />
-                      {m.is_exceptional && <RareBadge />}
+            <div className="soft-scroll hidden max-h-[520px] space-y-2 px-3 pb-3 pr-1 md:block">
+              {moves.map((m) => {
+                const key = `household-move-${m.user}-${m.id}`;
+                const open = Boolean(expandedActions[key]);
+                return (
+                  <div
+                    key={key}
+                    className="cursor-pointer rounded-lg border border-ink-400/50 bg-ink-900/60 px-3 py-2 transition-colors hover:border-ink-400"
+                    onClick={() => toggleAction(key)}
+                  >
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase ${m.user?.toLowerCase?.() === "user b" ? "border-pink-accent/35 bg-pink-accent/15 text-pink-accent" : "border-cyan-accent/30 bg-cyan-accent/10 text-cyan-100"}`}>
+                            {m.user}
+                          </span>
+                          <span className="text-[11px] text-slate-500">{m.route ?? (m.referral_from ? `Refer via ${m.referral_from}` : "Direct application")}</span>
+                        </div>
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <span className="truncate text-sm font-medium text-slate-100">{cardName(m)}</span>
+                          <StatusBadge status={m.status} />
+                          {m.is_exceptional && <RareBadge />}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {m.issuer} - {m.ownership}{m.currency ? ` - ${m.currency}` : ""}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="font-semibold tabular-nums text-slate-200">{householdPointsLabel(m)}</div>
+                        <div className="text-[11px] text-slate-500">{fmtMoney(householdValue(m))}</div>
+                      </div>
+                      <span className={`shrink-0 text-lg text-slate-500 transition-transform ${open ? "rotate-90" : ""}`}>&rsaquo;</span>
                     </div>
-                    <div className="text-[11px] text-slate-500">
-                      {m.issuer} - {m.ownership}
-                      {m.currency ? ` - ${m.currency}` : ""}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-slate-500">{m.reason}</div>
-                  </td>
-                  <td className="td text-slate-300">
-                    {m.referral_from ? (
-                      <span className="text-cyan-accent">
-                        Refer via {m.referral_from}
-                        {m.referral_value != null ? ` (+${fmtMoney(m.referral_value)})` : ""}
-                      </span>
-                    ) : (
-                      "Direct application"
+                    {open && (
+                      <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
+                        <div>{m.reason}</div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1">
+                          <span>{offerText(m)}</span>
+                          <span>{householdBreakdown(m)}</span>
+                          <span>{m.route ?? (m.referral_from ? `Refer via ${m.referral_from}` : "Direct application")}</span>
+                        </div>
+                      </div>
                     )}
-                  </td>
-                  <td className="td text-slate-300">{offerText(m)}</td>
-                  <td className="td text-right">
-                    <div className="font-mono text-slate-200">{householdPointsLabel(m)}</div>
-                    <div className="text-[11px] text-slate-500">{householdBreakdown(m)}</div>
-                    <div className="text-[11px] text-slate-500">{fmtMoney(householdValue(m))}</div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            </table>
+                  </div>
+                );
+              })}
             </div>
           </>
         )}
@@ -598,19 +602,44 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
           </p>
         ) : (
             <div className="soft-scroll max-h-[360px] space-y-2 pr-1">
-            {referrals.map((r, i) => (
-              <div key={i} className="flex flex-col gap-1.5 rounded-lg border border-ink-400/50 bg-ink-800/40 px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
-                <span className="chip w-fit bg-cyan-accent/15 text-cyan-accent">{r.from_user}{" -> "}{r.to_user}</span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-slate-100">{cardName(r)}</div>
-                  <div className="line-clamp-2 mt-0.5 text-[11px] leading-tight text-slate-400">{r.reason}</div>
+            {referrals.map((r, i) => {
+              const key = `household-referral-${i}-${r.id}`;
+              const open = Boolean(expandedActions[key]);
+              return (
+              <div
+                key={key}
+                className="cursor-pointer rounded-lg border border-ink-400/50 bg-ink-900/60 px-3 py-2 transition-colors hover:border-ink-400"
+                onClick={() => toggleAction(key)}
+              >
+                <div className="flex min-w-0 items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase ${r.from_user?.toLowerCase?.() === "user b" ? "border-pink-accent/35 bg-pink-accent/15 text-pink-accent" : "border-cyan-accent/30 bg-cyan-accent/10 text-cyan-100"}`}>
+                        {r.from_user}
+                      </span>
+                      <span className="text-[11px] text-slate-500">refer {r.to_user}</span>
+                    </div>
+                    <div className="truncate text-sm font-medium text-slate-100">{cardName(r)}</div>
+                    <div className="mt-1 text-xs font-semibold text-emerald-300">{householdBreakdown(r)}</div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="font-semibold tabular-nums text-emerald-300">{fmtMoney(r.household_gain)}</div>
+                    <div className="text-[10px] text-slate-500">household gain</div>
+                  </div>
+                  <span className={`shrink-0 text-lg text-slate-500 transition-transform ${open ? "rotate-90" : ""}`}>&rsaquo;</span>
                 </div>
-                <div className="shrink-0 text-left sm:text-right">
-                  <div className="font-mono text-sm text-emerald-300">{fmtMoney(r.household_gain)}</div>
-                  <div className="text-[10px] text-slate-500">household gain</div>
-                </div>
+                {open && (
+                  <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
+                    <div>{r.reason}</div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      <span>Recipient offer {fmtMoney(r.recipient_offer_value)}</span>
+                      <span>Referral value {r.referral_value != null ? fmtMoney(r.referral_value) : "needs data"}</span>
+                      <span>Peak {r.peak_score}</span>
+                    </div>
+                  </div>
+                )}
               </div>
-            ))}
+            )})}
           </div>
         )}
       </Card>

@@ -21,7 +21,7 @@
   JSON`).
 - **Additive DB migrations**: SQLite `create_all` won't add columns to existing tables.
   Register every new column in `backend/db.py::_ADDED_COLUMNS` (runs on startup against
-  `data/churn.db`).
+  `data/wewards.db`).
 
 ## PUBLIC tables (ingestion-managed)
 

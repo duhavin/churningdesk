@@ -344,7 +344,7 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
                         </div>
                       </div>
                       <div className="text-left sm:text-right">
-                        <div className="font-mono text-sm text-cyan-accent">{row.progress_pct}%</div>
+                        <div className="text-sm font-semibold tabular-nums text-cyan-accent">{row.progress_pct}%</div>
                         <div className="text-[11px] text-slate-500">{fmtNum(row.available_points)} / {fmtNum(row.needed_points)} pts</div>
                       </div>
                     </div>
@@ -354,11 +354,11 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
                     <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
                       <div>
                         <div className="text-slate-500">More needed</div>
-                        <div className="font-mono text-slate-200">{fmtNum(row.more_points_needed)}</div>
+                        <div className="font-semibold tabular-nums text-slate-200">{fmtNum(row.more_points_needed)}</div>
                       </div>
                       <div>
                         <div className="text-slate-500">Trip value</div>
-                        <div className="font-mono text-slate-200">
+                        <div className="font-semibold tabular-nums text-slate-200">
                           {row.realized_cpp == null ? "Needs value" : `${row.realized_cpp.toFixed(2)} cpp`}
                         </div>
                       </div>

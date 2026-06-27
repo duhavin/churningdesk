@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { api, type CatalogEntry } from "../lib/api";
+import { api, type CardReference, type CatalogEntry } from "../lib/api";
 import type { Flash } from "../App";
 import {
   Banner,
@@ -42,6 +42,25 @@ function compactEntries(obj: Record<string, any> | null | undefined) {
     .join(" | ");
 }
 
+function qualityIssueLabel(issue: string) {
+  const labels: Record<string, string> = {
+    pending_verified_update: "verified update pending",
+    source_identity_conflict: "source conflicts with card",
+    broad_source_not_product_truth: "broad source only",
+    source_not_product_specific: "source not product-specific",
+    missing_source: "missing source",
+    never_verified: "never verified",
+    stale_verified_data: "stale verified data",
+    missing_current_offer: "missing current offer",
+    missing_public_peak: "missing public peak",
+    missing_annual_fee: "missing annual fee",
+    missing_currency: "missing currency",
+    missing_min_spend: "missing minimum spend",
+    missing_spend_window: "missing spend window",
+  };
+  return labels[issue] ?? issue.replace(/_/g, " ");
+}
+
 function useSummary(r: CatalogEntry) {
   return compactEntries(r.earn_multipliers) || compactEntries(r.best_category_uses);
 }
@@ -63,7 +82,7 @@ function benefitText(item: any) {
   let text = cleanBenefitText([rawValue, rawName].filter(Boolean).join(" "));
   if (!text) return "";
 
-  const low = text.toLowerCase();
+  const low = text.toLowerCase().replace(/[\u2018\u2019]/g, "'");
   const noise = [
     "schema.org",
     "aggregaterating",
@@ -74,6 +93,15 @@ function benefitText(item: any) {
     "to learn more",
     "please visit",
     "whether you'd use",
+    "rates and fees",
+    "terms and conditions",
+    "while we don't cover all available",
+    "editorial content is not influenced",
+    "not influenced by nor subject to review",
+    "credit card company, bank or partner",
+    "not all offers",
+    "privacy",
+    "cookie",
   ];
   if (noise.some((token) => low.includes(token))) return "";
 
@@ -163,14 +191,14 @@ function currentOfferText(r: CatalogEntry) {
   const points = offerPoints(r);
   if (points) return fmtNum(points);
   if (r.current_offer_cash) return fmtMoney(r.current_offer_cash);
-  if (r.last_verified && !r.needs_data) return "No bonus";
+  if (r.eligibility_tags?.includes("closed_to_new_applicants")) return "Closed";
+  if (r.last_verified && !r.needs_data) return "No public offer";
   return "Needs data";
 }
 
 function currentOfferSubtext(r: CatalogEntry) {
   const parts: string[] = [];
   if (r.current_offer_cash) parts.push(`${fmtMoney(r.current_offer_cash)} cash`);
-  else parts.push("No cash bonus");
   if (r.current_offer_min_spend) {
     const window = r.current_offer_window_months ? ` / ${r.current_offer_window_months}mo` : "";
     parts.push(`${fmtMoney(r.current_offer_min_spend)}${window}`);
@@ -184,7 +212,8 @@ function offerLine(r: CatalogEntry) {
   if (r.current_offer_cash) parts.push(`${fmtMoney(r.current_offer_cash)} cash`);
   if (!offerPoints(r) && r.current_offer_cash) return `${fmtMoney(r.current_offer_cash)} cash`;
   if (parts.length) return parts.join(" + ");
-  if (r.last_verified && !r.needs_data) return "No bonus";
+  if (r.eligibility_tags?.includes("closed_to_new_applicants")) return "Closed to new applicants";
+  if (r.last_verified && !r.needs_data) return "No public offer";
   return "Needs data";
 }
 
@@ -202,7 +231,7 @@ function referralLine(r: CatalogEntry) {
 }
 
 function hasKnownOffer(r: CatalogEntry) {
-  return Boolean(offerPoints(r) || r.current_offer_cash || (r.last_verified && !r.needs_data));
+  return Boolean(offerPoints(r) || r.current_offer_cash);
 }
 
 function shortDate(value: string | null | undefined) {
@@ -322,6 +351,7 @@ function PhoneMetric({ label, value }: { label: string; value: string }) {
 export function CardPlan({ user, bump, flash }: { user: string; bump: number; flash: Flash }) {
   const [rows, setRows] = useState<CatalogEntry[]>([]);
   const [householdMoves, setHouseholdMoves] = useState<any[]>([]);
+  const [cardReferences, setCardReferences] = useState<CardReference[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [issuer, setIssuer] = useState("");
@@ -333,12 +363,14 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
 
   const load = () => {
     setLoading(true);
-    Promise.allSettled([api.catalog(user), api.household()])
-      .then(([catalog, household]) => {
+    Promise.allSettled([api.catalog(user), api.household(), api.cardReferences()])
+      .then(([catalog, household, references]) => {
         if (catalog.status === "fulfilled") setRows(catalog.value);
         else flash("error", catalog.reason?.message ?? "Card Plan failed to load.");
         if (household.status === "fulfilled") setHouseholdMoves(household.value?.moves ?? []);
         else setHouseholdMoves([]);
+        if (references.status === "fulfilled") setCardReferences(references.value);
+        else setCardReferences([]);
       })
       .finally(() => setLoading(false));
   };
@@ -356,6 +388,11 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
     return out;
   }, [householdMoves]);
   const pipelineFor = (r: CatalogEntry) => pipelineByProductId.get(r.id) ?? [];
+  const referencesByKey = useMemo(() => new Map(cardReferences.map((r) => [r.canonical_key, r])), [cardReferences]);
+  const sourceUrlFor = (r: CatalogEntry) => {
+    const reference = r.canonical_key ? referencesByKey.get(r.canonical_key) : null;
+    return reference?.issuer_url || reference?.offer_url || r.source_url || null;
+  };
 
   const filtered = useMemo(() => {
     let next = rows.filter((x) => {
@@ -438,7 +475,7 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
   if (loading && rows.length === 0) return <Spinner />;
 
   return (
-    <div className="space-y-3">
+    <div className="card-plan space-y-3">
       {rows.length === 0 ? (
         <EmptyState
           title="Catalog is empty"
@@ -542,6 +579,7 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
                     <ExpandedDetails
                       card={r}
                       pipeline={pipelineFor(r)}
+                      sourceUrl={sourceUrlFor(r)}
                       onEdit={() => {
                         setEditing(r);
                         setFormOpen(true);
@@ -554,7 +592,7 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
             ))}
           </div>
 
-          <div className="hidden overflow-hidden border border-slate-800 bg-[#080d16] md:block">
+          <div className="card-plan-table-surface hidden overflow-hidden border border-slate-800 bg-ink-900 md:block">
             <table className="w-full table-fixed border-collapse text-left text-sm">
               <colgroup>
                 <col style={{ width: "5%" }} />
@@ -567,7 +605,7 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
                 <col style={{ width: "10%" }} />
                 <col style={{ width: "6%" }} />
               </colgroup>
-              <thead className="bg-slate-950">
+              <thead className="card-plan-table-head bg-slate-950">
                 <tr>
                   <th className="px-3 py-3 text-[11px] font-semibold uppercase tracking-normal text-slate-500">Rank</th>
                   <th className="px-3 py-3 text-[11px] font-semibold uppercase tracking-normal text-slate-500">Card</th>
@@ -586,8 +624,8 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
                   return (
                     <Fragment key={r.id}>
                       <tr
-                        className={`cursor-pointer border-t border-slate-800 align-top transition-colors hover:bg-slate-900/70 ${
-                          expanded.has(r.id) ? "bg-slate-900/60" : "bg-[#080d16]"
+                        className={`card-plan-row cursor-pointer border-t border-slate-800 align-top transition-colors hover:bg-slate-900/70 ${
+                          expanded.has(r.id) ? "card-plan-row-open bg-slate-900/60" : "bg-transparent"
                         }`}
                         onClick={() => toggleExpanded(r.id)}
                       >
@@ -597,7 +635,7 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
                         <td className="px-3 py-3 align-top">
                           <div className="flex items-start gap-2">
                             <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold leading-5 text-white">{cardName(r)}</div>
+                              <div className="truncate text-sm font-semibold leading-5 text-slate-100">{cardName(r)}</div>
                               <div className="mt-0.5 text-[11px] leading-4 text-slate-400">
                                 {r.issuer} | {r.ownership}{r.currency ? ` | ${r.currency}` : ""}
                               </div>
@@ -617,7 +655,7 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
                           <PlanStatusPill status={r.status} />
                         </td>
                         <td className="px-3 py-3 align-top">
-                          <div className="text-lg font-semibold leading-none text-white tabular-nums">{r.needs_data ? "-" : Math.round(r.peak_score)}</div>
+                          <div className="text-lg font-semibold leading-none text-slate-100 tabular-nums">{r.needs_data ? "-" : Math.round(r.peak_score)}</div>
                           <div className="mt-1 text-xs text-slate-500">/100</div>
                         </td>
                         <td className="px-3 py-3 align-top">
@@ -653,11 +691,12 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
                         </td>
                       </tr>
                       {expanded.has(r.id) && (
-                        <tr className="border-t border-slate-800 bg-[#0b1320]">
+                        <tr className="card-plan-expanded-row border-t border-slate-800 bg-slate-900/70">
                           <td colSpan={9} className="px-4 py-4">
                             <ExpandedDetails
                               card={r}
                               pipeline={pipeline}
+                              sourceUrl={sourceUrlFor(r)}
                               onEdit={() => {
                                 setEditing(r);
                                 setFormOpen(true);
@@ -688,11 +727,13 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
 function ExpandedDetails({
   card,
   pipeline,
+  sourceUrl,
   onEdit,
   onDelete,
 }: {
   card: CatalogEntry;
   pipeline: any[];
+  sourceUrl: string | null;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -705,7 +746,7 @@ function ExpandedDetails({
           <DetailRow label="First-year value" value={fmtMoney(card.offer_value)} hint={`Credits ${fmtMoney(card.first_year_credit_value)}`} />
           <DetailRow label="Annual fee" value={fmtMoney(card.annual_fee)} hint={card.reports_to_personal_credit ? "Reports personal" : "Business/no personal report"} />
           {referralLine(card) && <DetailRow label="Referral" value={referralLine(card).replace(/^Referral /, "")} />}
-          <DetailRow label="Cash bonus" value={card.current_offer_cash ? fmtMoney(card.current_offer_cash) : "No cash bonus"} />
+          {card.current_offer_cash ? <DetailRow label="Cash offer" value={fmtMoney(card.current_offer_cash)} /> : null}
         </div>
         {card.targeted_beats_public && (
           <div className="text-xs text-pink-accent">Your targeted offer beats the public offer.</div>
@@ -734,7 +775,14 @@ function ExpandedDetails({
               Pipeline: {pipelineLabel(pipeline)}
             </div>
           )}
-          {card.needs_data && <div className="text-amber-200">Needs verified offer/peak/value data before ranking as a deal.</div>}
+          {card.needs_data && (
+            <div className="text-amber-200">
+              Needs verified data before ranking
+              {card.data_quality_issues?.length
+                ? `: ${card.data_quality_issues.slice(0, 3).map(qualityIssueLabel).join(", ")}.`
+                : "."}
+            </div>
+          )}
           {card.eligibility_tags?.length ? (
             <div className="flex flex-wrap gap-1 pt-1">
               {card.eligibility_tags.map((tag) => (
@@ -764,7 +812,7 @@ function ExpandedDetails({
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-            {card.source_url ? <a href={card.source_url} target="_blank" rel="noreferrer" className="text-cyan-accent hover:underline">source</a> : "No source URL"}
+            {sourceUrl ? <a href={sourceUrl} target="_blank" rel="noreferrer" className="text-cyan-accent hover:underline">source</a> : "No source URL"}
             {card.last_verified ? <span>verified {shortDate(card.last_verified)}</span> : <span>not verified</span>}
           </div>
           <div className="flex flex-wrap gap-2 pt-1">
@@ -817,7 +865,7 @@ function ManualOfferCell({
       <input
         type="text"
         inputMode="numeric"
-        className="h-8 w-20 min-w-0 border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-accent/60"
+        className="input h-8 w-20 min-w-0 rounded-none px-2 py-0 text-sm"
         placeholder="points"
         title="Private targeted offer points for this user"
         value={v}

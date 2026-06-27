@@ -73,7 +73,7 @@ def _cache_key(url: str) -> str:
 
 
 def _cache_dir() -> Path:
-    root = Path(os.getenv("CHURN_HTTP_CACHE_DIR", "data/http_cache"))
+    root = Path(os.getenv("WEWARDS_HTTP_CACHE_DIR", "data/http_cache"))
     root.mkdir(parents=True, exist_ok=True)
     (root / "pages").mkdir(parents=True, exist_ok=True)
     return root

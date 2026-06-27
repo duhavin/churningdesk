@@ -14,7 +14,7 @@ opportunities. Focus on the project goal: a clean two-person churning decision
 engine that produces valid, explainable, value-first next actions while staying
 cost-conscious with web search and LLM usage.
 
-Do not edit `<separate-churn-control-repo>`. Preserve the
+Do not edit `<separate-wewards-control-repo>`. Preserve the
 PUBLIC/PRIVATE firewall, cpp convention, review queue, cached web-search
 last-resort design, and additive migration rules. Provide prioritized findings
 with evidence, risk, concrete remediation, and verification steps. Do not

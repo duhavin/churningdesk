@@ -1,4 +1,4 @@
-# Churn Usage And Operations
+# WEwards Usage And Operations
 
 ## Backend
 
@@ -25,12 +25,12 @@ Open `http://127.0.0.1:5176`.
 
 The frontend run script serves the built `frontend/dist` app through
 `frontend/serve-dist.mjs` and proxies `/api` to `8000`. Run `npm run build`
-after frontend edits, or use `scripts\restart-churn.ps1`, which builds before
+after frontend edits, or use `scripts\restart-wewards.ps1`, which builds before
 starting `5176`.
 
 ## Stable Local Restart
 
-Churn should always run with:
+WEwards should always run with:
 
 - Backend API on `http://127.0.0.1:8000`
 - Frontend/Vite on `http://127.0.0.1:5176`
@@ -38,12 +38,12 @@ Churn should always run with:
 Use the restart script instead of manually starting extra ports:
 
 ```powershell
-.\scripts\restart-churn.ps1
+.\scripts\restart-wewards.ps1
 ```
 
 The script:
 
-- Stops Churn Python/Node processes.
+- Stops WEwards Python/Node processes.
 - Clears stale listeners on `8000`, `5176`, and the old fallback `8017`.
 - Handles orphaned Windows multiprocessing workers that can keep serving stale
   uvicorn code after their parent PID disappears.
@@ -52,7 +52,7 @@ The script:
 - Verifies `5176/api/run/status` and `5176/api/catalog/duplicates` return JSON.
 
 If process or socket inspection is denied, rerun PowerShell as Administrator.
-Do not start Churn on alternate ports unless this file is intentionally
+Do not start WEwards on alternate ports unless this file is intentionally
 updated at the same time.
 
 ## Production-Style Local Serve
@@ -74,12 +74,14 @@ Open `http://localhost:8000`.
 - `ANTHROPIC_API_KEY` - enables PUBLIC ingestion/discovery/refresh LLM work.
 - `ANTHROPIC_MODEL` - extraction/discovery model.
 - `ANTHROPIC_SEARCH_MODEL` - cited search fallback model.
-- `DATABASE_URL` - defaults to `sqlite:///data/churn.db`.
+- `DATABASE_URL` - defaults to `sqlite:///data/wewards.db`.
 - `WEB_SEARCH_*` - expensive fallback controls.
 - `CRAWL4AI_ENABLED` - enables the rendered fallback used by Deep refresh after static
   extraction misses known public URLs. Defaults to `true`.
 - `CRAWL4_AI_BASE_DIRECTORY` / `CRAWL4AI_BASE_DIR` - Crawl4AI local DB/cache root. Defaults
-  to `data`, keeping Crawl4AI artifacts inside this project.
+  to the shared workspace toolbench Crawl4AI state folder when present, otherwise
+  `data/crawl4ai`. Keep browser profiles, Crawl4AI state, and large crawl output out of the
+  committed repo.
 - `CRAWL4AI_MAX_URLS_PER_REFRESH` / `CRAWL4AI_TIMEOUT_MS` - cap rendered fallback work.
 - `OFFER_DELTA_THRESHOLD` - review queue threshold.
 - `AUTO_COMMIT_SMALL_CHANGES` - high-confidence small change behavior.

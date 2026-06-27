@@ -26,6 +26,8 @@ ISSUER_ALIASES = {
     "wells_fargo": "wells_fargo",
     "u_s_bank": "us_bank",
     "us_bank": "us_bank",
+    "bilt": "bilt",
+    "bilt_rewards": "bilt",
 }
 
 TRANSFERABLE_CURRENCIES = {
@@ -88,6 +90,9 @@ CARD_DISPLAY_NAMES = {
     ("wells_fargo", "wells_fargo_autograph"): "Wells Fargo Autograph",
     ("wells_fargo", "wells_fargo_autograph_journey"): "Wells Fargo Autograph Journey",
     ("wells_fargo", "wells_fargo_active_cash"): "Wells Fargo Active Cash",
+    ("bilt", "bilt_blue"): "Bilt Blue",
+    ("bilt", "bilt_obsidian"): "Bilt Obsidian",
+    ("bilt", "bilt_palladium"): "Bilt Palladium",
 }
 
 
@@ -356,6 +361,14 @@ def derive_product_family(issuer: str | None, product_name: str | None) -> str |
         if "active cash" in name:
             return "wells_fargo_active_cash"
 
+    if "bilt" in issuer_norm:
+        if "palladium" in name:
+            return "bilt_palladium"
+        if "obsidian" in name:
+            return "bilt_obsidian"
+        if "blue" in name or "mastercard" in name or "card" in name:
+            return "bilt_blue"
+
     return None
 
 
@@ -430,6 +443,14 @@ def product_variant_key(
             return (issuer_key, "amex_everyday_preferred")
         if "everyday" in name:
             return (issuer_key, "amex_everyday")
+
+    if issuer_key == "bilt" or "bilt" in name:
+        if "palladium" in name:
+            return ("bilt", "bilt_palladium")
+        if "obsidian" in name:
+            return ("bilt", "bilt_obsidian")
+        if "blue" in name or "mastercard" in name or "card" in name:
+            return ("bilt", "bilt_blue")
 
     return (issuer_key, normalized_key(product_name))
 

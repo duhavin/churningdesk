@@ -1,4 +1,4 @@
-# CLAUDE.md - Churn Project Context for Claude/Codex
+# CLAUDE.md - WEwards Project Context for Claude/Codex
 
 > Session-load context for agents working in `<repo-root>`.
 > This gives Claude/Codex the same kind of persistent operating contract used in
@@ -6,7 +6,7 @@
 
 ## What This Is
 
-Churn is a local, two-user credit-card churning decision engine for User A and
+WEwards is a local, two-user credit-card churning decision engine for User A and
 User B. It combines private household state with public card data to produce
 clear, explainable next actions: apply, wait, refer, renew, downgrade, cancel,
 use a specific card for a category, or mark data as needing review.
@@ -22,10 +22,26 @@ requests, read in this order:
 
 1. `AGENTS.md` - hard rules, workspace boundary, architecture map.
 2. `docs/PROJECT_PRIMER.md` - one-doc project context.
-3. `docs/PROJECT_EVOLUTION.md` - living audit/change/revert ledger.
-4. `docs/NEXT_TASKS.md` - current priorities and deferred work.
-5. Relevant docs in `docs/context/`.
-6. `docs/SYSTEM.md`, `docs/USAGE.md`, and `docs/UX.md` as needed.
+3. `docs/CURRENT_STATE.md` - active project mode, paths, run commands, and Git policy.
+4. `docs/PROJECT_EVOLUTION.md` - living audit/change/revert ledger.
+5. `docs/NEXT_TASKS.md` - current priorities and deferred work.
+6. Relevant docs in `docs/context/`.
+7. `docs/SYSTEM.md`, `docs/USAGE.md`, and `docs/UX.md` as needed.
+
+## Project Mode And Git Workflow
+
+Project mode: `personal-standard`.
+
+After Davin approves implementation work in this repo, run the relevant
+verification and sanitize/security preflight. Commit, push, tag, remote rename,
+deployment, dependency installs, and global config changes still require
+explicit approval.
+
+Do not commit or push if the staged set would include secrets, `.env` values,
+private household data, databases, logs, browser profiles, generated media,
+virtual environments, dependency folders, unrelated user work, unclear-scope
+changes, or a Git operation Davin has not explicitly approved. Stop and report
+instead.
 
 ## Non-Negotiable Principles
 
@@ -39,7 +55,9 @@ requests, read in this order:
 7. Unknown or unsupported data becomes `NEEDS DATA`; never fabricate.
 8. Public offers, targeted offers, public peaks, and targeted/incognito highs
    stay separate.
-9. Large extracted changes and eligibility-rule changes go through review.
+9. Ambiguous/untrusted large extracted changes and eligibility-rule changes go
+   through review; high-confidence official product-page current offer terms can
+   auto-adopt with evidence.
 10. Web search is a cached last resort, not routine refresh.
 11. Additive DB migrations go through `backend/db.py::_ADDED_COLUMNS`.
 12. Meaningful changes update `docs/PROJECT_EVOLUTION.md`.
@@ -77,7 +95,7 @@ For broad prompts like "make this professional grade" or "fix the app":
 
 ## What Not To Do
 
-- Do not edit `<separate-churn-control-repo>` unless explicitly asked.
+- Do not edit `<separate-wewards-control-repo>` unless explicitly asked.
 - Do not send private household data to LLMs or web APIs.
 - Do not use model memory as source evidence for offers/rules.
 - Do not promote redemption/live award-search work ahead of the core

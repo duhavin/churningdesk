@@ -12,9 +12,152 @@ from urllib.parse import urlparse
 
 from .product_identity import product_variant_key
 
+BENEFIT_DISCLOSURE_NOISE = (
+    "while we don't cover all available",
+    "we don't cover all available",
+    "editorial content is not influenced",
+    "not influenced by nor subject to review",
+    "subject to review by any credit card company",
+    "credit card company, bank or partner",
+    "our editorial team creates and maintains",
+    "rates and fees",
+    "terms and conditions",
+    "terms apply",
+    "to learn more",
+    "please visit",
+    "privacy",
+    "cookie",
+    "doesn't include",
+    "does not include",
+    "not all offers",
+    "no longer available",
+    "welcome offer",
+    "welcome bonus",
+    "new cardmember offer",
+    "new cardmember",
+    "sign-up bonus",
+    "signup bonus",
+    "best sign-up",
+    "best signup",
+    "our best offer",
+    "best new business credit card",
+    "opens offer details",
+    "apply to know if",
+    "find out your exact",
+    "if you're approved",
+    "if you are approved",
+    "interest rates",
+    "interest rates & charges",
+    "pricing details",
+    "introductory rate",
+    "balance transfers",
+    "credit card review",
+    "card review",
+    "contents best",
+    "read our review",
+    "current credit card sign bonuses",
+    "best current credit card",
+    "if you already have any",
+    "creditworthiness",
+    "variable apr",
+    "apr for purchases",
+    "flex plans",
+    "credit score may be impacted",
+    "please review",
+    "guide to benefits",
+    "original post",
+    "launched today",
+    "these introductory and promotional",
+    "not everyone will qualify",
+    "cardmember offer",
+    "earn more than ever",
+    "same low annual fee",
+)
+
+BENEFIT_SIGNAL_TERMS = (
+    "statement credit",
+    "travel credit",
+    "hotel credit",
+    "dining credit",
+    "airline credit",
+    "flight credit",
+    "rideshare credit",
+    "uber cash",
+    "bilt cash",
+    "coupon book",
+    "lounge",
+    "priority pass",
+    "global entry",
+    "tsa precheck",
+    "nexus",
+    "clear",
+    "companion",
+    "free night",
+    "anniversary",
+    "dashpass",
+    "doordash",
+    "uber",
+    "resy",
+    "dunkin",
+    "instacart",
+    "lyft",
+    "checked bag",
+    "preferred boarding",
+    "award discount",
+    "cell phone protection",
+    "purchase protection",
+    "extended warranty",
+    "insurance",
+    "wi-fi",
+    "wifi",
+)
+
+BENEFIT_DISQUALIFY_TERMS = (
+    "credit card",
+    "creditworthiness",
+    "variable apr",
+    "introductory rate",
+    "balance transfer",
+    "after you spend",
+    "welcome",
+    "new cardmember",
+    "apply",
+    "approved",
+    "pricing",
+    "interest",
+    "review",
+    "original post",
+    "launched today",
+    "credit score",
+    "redeem for cash back",
+)
+
+BENEFIT_NAME_PREFIX_NOISE = (
+    "one credit",
+    "the credit",
+    "you can receive",
+    "after that",
+    "but ",
+    "please review",
+    "the american express",
+    "1x ",
+    "2x ",
+    "3x ",
+    "4x ",
+    "5x ",
+    "card has",
+    "wyndham rewards",
+    "ink business",
+    "sapphire reserve",
+    "both the",
+    "free nights can require",
+    "individuals whose",
+)
+
 
 def _norm(value: Any) -> str:
-    return " ".join(str(value or "").lower().split())
+    text = str(value or "").lower().replace("\u2018", "'").replace("\u2019", "'")
+    return " ".join(text.split())
 
 
 def _source_host(source_url: str | None) -> str:
@@ -31,6 +174,131 @@ def _raw_text(items: Any) -> str:
         else:
             pieces.append(str(item or ""))
     return _norm(" ".join(pieces))
+
+
+def is_benefit_noise(value: Any) -> bool:
+    if isinstance(value, dict):
+        low = _norm(
+            " ".join(
+                str(value.get(key) or "")
+                for key in (
+                    "name",
+                    "benefit",
+                    "title",
+                    "value",
+                    "frequency",
+                    "category",
+                    "description",
+                    "notes",
+                    "detail",
+                    "evidence",
+                    "source_snippet",
+                )
+            )
+        )
+    else:
+        low = _norm(value)
+    if not low:
+        return True
+    if "[text]" in low:
+        return True
+    if not isinstance(value, dict) and ('\\"name\\"' in low or '"name":' in low or "https://" in low):
+        return True
+    if re.search(r"earn\s+[0-9,]+\s+(?:bonus\s+)?(?:points|miles)", low) and "anniversary" not in low:
+        return True
+    if "after you spend" in low and any(term in low for term in ("points", "miles", "bonus", "cash back")):
+        return True
+    return any(
+        token in low
+        for token in (
+            "[json-ld]",
+            "@context",
+            "schema.org",
+            "aggregaterating",
+            "breadcrumblist",
+            "feesandcommissionsspecification",
+            "[title]",
+            "[meta]",
+            "pay over time",
+            "payment plan",
+            "at checkout",
+            "orders totaling",
+            "break up credit card purchases",
+            "start a plan",
+            "pricing and terms",
+            *BENEFIT_DISCLOSURE_NOISE,
+        )
+    )
+
+
+def _has_benefit_signal(text: str) -> bool:
+    low = _norm(text)
+    if not low:
+        return False
+    if any(term in low for term in BENEFIT_DISQUALIFY_TERMS):
+        allowed_exceptions = (
+            "statement credit",
+            "travel credit",
+            "hotel credit",
+            "dining credit",
+            "airline credit",
+            "flight credit",
+            "rideshare credit",
+            "global entry",
+            "tsa precheck",
+            "priority pass",
+            "lounge",
+            "companion",
+            "free night",
+            "checked bag",
+            "purchase protection",
+            "extended warranty",
+        )
+        if not any(term in low for term in allowed_exceptions):
+            return False
+    if any(term in low for term in BENEFIT_SIGNAL_TERMS):
+        return True
+    has_money = bool(re.search(r"\$\s*[1-9][0-9,]*(?:\.\d+)?", low))
+    if has_money and any(
+        term in low
+        for term in (
+            "credit",
+            "coupon",
+            "pass",
+            "lounge",
+            "companion",
+            "protection",
+            "insurance",
+            "benefit",
+        )
+    ):
+        return True
+    if re.search(r"\b[1-9][0-9,]*\s+(?:points|miles)\b", low) and any(
+        term in low for term in ("anniversary", "companion", "award")
+    ):
+        return True
+    return False
+
+
+def _is_bad_benefit_name(name: str) -> bool:
+    low = _norm(name)
+    if not low:
+        return True
+    if any(low.startswith(prefix) for prefix in BENEFIT_NAME_PREFIX_NOISE):
+        return True
+    if re.match(r"^\d{1,2},\s+\d{4}\b", low):
+        return True
+    if "..." in name and not low.startswith("$"):
+        return True
+    if "after" in low and "spend" in low:
+        return True
+    if re.search(r"\$\s*[1-9][0-9]{0,2}(?:,[0-9]{3})+[^.]{0,40}\bcredit\b", low):
+        return True
+    if re.search(r"\$\s*[1-9][0-9]{3,}[^.]{0,40}\bcredit\b", low):
+        return True
+    if low == "anniversary bonus":
+        return True
+    return False
 
 
 def _benefit(
@@ -55,7 +323,9 @@ def _benefit(
     return out
 
 
-def _benefit_key(item: dict[str, Any]) -> str:
+def _benefit_key(item: Any) -> str:
+    if not isinstance(item, dict):
+        return re.sub(r"[^a-z0-9]+", " ", str(item or "").lower()).strip()
     return re.sub(
         r"[^a-z0-9]+",
         " ",
@@ -63,34 +333,55 @@ def _benefit_key(item: dict[str, Any]) -> str:
     ).strip()
 
 
-def _structured_existing(items: Any) -> list[dict[str, Any]]:
+def _structured_existing(items: Any) -> list[Any]:
     if not isinstance(items, list):
         return []
-    out: list[dict[str, Any]] = []
+    out: list[Any] = []
     for item in items:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or item.get("benefit") or "").strip()
+        is_structured = isinstance(item, dict)
+        if is_structured:
+            name = str(item.get("name") or item.get("benefit") or item.get("title") or "").strip()
+            value = item.get("value") or item.get("annual_value") or item.get("amount")
+            frequency = item.get("frequency") or item.get("cadence") or "unknown"
+            category = item.get("category") or item.get("type")
+            description = item.get("description") or item.get("notes") or item.get("detail")
+            evidence = item.get("evidence") or item.get("source_snippet")
+            confidence = item.get("confidence")
+        else:
+            name = str(item or "").strip()
+            value = None
+            frequency = "unknown"
+            category = None
+            description = None
+            evidence = None
+            confidence = None
         if not name:
             continue
-        low = _norm(item)
-        if any(token in low for token in ("[json-ld]", "@context", "[title]", "[meta]", "pay over time", "payment plan")):
+        if is_benefit_noise(item):
+            continue
+        if _is_bad_benefit_name(name):
+            continue
+        name_signal = _has_benefit_signal(name)
+        if (is_structured and len(name) > 96) or not name_signal:
+            continue
+        if not is_structured:
+            out.append(name)
             continue
         cleaned = {
             "name": name,
-            "value": item.get("value") or item.get("annual_value") or item.get("amount"),
-            "frequency": item.get("frequency") or item.get("cadence") or "unknown",
-            "category": item.get("category") or item.get("type"),
-            "description": item.get("description") or item.get("notes") or item.get("detail"),
-            "evidence": item.get("evidence") or item.get("source_snippet"),
-            "confidence": item.get("confidence"),
+            "value": value,
+            "frequency": frequency,
+            "category": category,
+            "description": description,
+            "evidence": evidence,
+            "confidence": confidence,
         }
         out.append({key: value for key, value in cleaned.items() if value not in (None, "", [], {})})
     return out
 
 
-def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
+def _dedupe(items: list[Any]) -> list[Any]:
+    merged: list[Any] = []
     seen: set[str] = set()
     for item in items:
         key = _benefit_key(item)
@@ -343,7 +634,7 @@ def normalize_public_benefits(
     elif variant == ("capital_one", "capital_one_venture_x_personal"):
         known = _venture_x_benefits(source_url, text, allow_reference)
     else:
-        return None
+        return _dedupe(_structured_existing(items)) or None
 
     if known:
         return _dedupe(known)

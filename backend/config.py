@@ -12,11 +12,36 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _workspace_toolbench_path(*parts: str) -> Path | None:
+    path = Path.home() / "Desktop" / "Coding Projects" / "toolbench"
+    for part in parts:
+        path = path / part
+    return path if path.exists() else None
+
+
+def _default_crawl4ai_base_dir() -> str:
+    shared = _workspace_toolbench_path("crawl4ai", "state")
+    return str(shared) if shared else "data/crawl4ai"
+
+
+def _env_nonempty(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return default
+
+
+_shared_playwright_browsers = _workspace_toolbench_path("playwright-browsers")
+if _shared_playwright_browsers:
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_shared_playwright_browsers))
+
 # --- Identity ---------------------------------------------------------------
 # Two-user app per the spec.
 USERS: list[str] = [
     user.strip()
-    for user in os.getenv("CHURN_USERS", "User A,User B").split(",")
+    for user in os.getenv("WEWARDS_USERS", "User A,User B").split(",")
     if user.strip()
 ] or ["User A", "User B"]
 
@@ -35,7 +60,7 @@ SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS: int = int(os.getenv("SUPPLEMENTAL_SEARCH_COOL
 CRAWL4AI_ENABLED: bool = os.getenv("CRAWL4AI_ENABLED", "true").lower() == "true"
 CRAWL4AI_MAX_URLS_PER_REFRESH: int = int(os.getenv("CRAWL4AI_MAX_URLS_PER_REFRESH", "6"))
 CRAWL4AI_TIMEOUT_MS: int = int(os.getenv("CRAWL4AI_TIMEOUT_MS", "45000"))
-CRAWL4AI_BASE_DIR: str = os.getenv("CRAWL4_AI_BASE_DIRECTORY", os.getenv("CRAWL4AI_BASE_DIR", "data"))
+CRAWL4AI_BASE_DIR: str = _env_nonempty("CRAWL4_AI_BASE_DIRECTORY", "CRAWL4AI_BASE_DIR", default=_default_crawl4ai_base_dir())
 Path(CRAWL4AI_BASE_DIR).mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("CRAWL4_AI_BASE_DIRECTORY", str(Path(CRAWL4AI_BASE_DIR).resolve()))
 SEATS_AERO_API_KEY: str = os.getenv("SEATS_AERO_API_KEY", "").strip()
@@ -43,7 +68,7 @@ SEATS_AERO_BASE_URL: str = os.getenv("SEATS_AERO_BASE_URL", "https://seats.aero/
 SEATS_AERO_ENABLED: bool = bool(SEATS_AERO_API_KEY)
 
 # --- Storage ----------------------------------------------------------------
-DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///data/churn.db")
+DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///data/wewards.db")
 
 # --- Ingestion tuning -------------------------------------------------------
 OFFER_DELTA_THRESHOLD: float = float(os.getenv("OFFER_DELTA_THRESHOLD", "0.15"))
@@ -82,7 +107,7 @@ DEFAULT_SOURCES: list[str] = [
 # Reputability scope for discovery (configurable per §4.2).
 DISCOVERY_ISSUERS: list[str] = [
     "Chase", "American Express", "Citi", "Capital One", "Bank of America",
-    "Wells Fargo", "U.S. Bank", "Barclays",
+    "Wells Fargo", "Bilt", "U.S. Bank", "Barclays",
     "United", "Delta", "American Airlines", "Alaska Airlines", "Southwest",
     "JetBlue", "Hawaiian Airlines",
     "Marriott", "Hilton", "Hyatt", "IHG", "Wyndham", "Choice",

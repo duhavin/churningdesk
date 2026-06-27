@@ -2,9 +2,9 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 
-const port = Number(process.env.CHURN_FRONTEND_PORT || 5176);
-const host = process.env.CHURN_FRONTEND_HOST || "127.0.0.1";
-const apiTarget = new URL(process.env.CHURN_API_TARGET || "http://127.0.0.1:8000");
+const port = Number(process.env.WEWARDS_FRONTEND_PORT || 5176);
+const host = process.env.WEWARDS_FRONTEND_HOST || "127.0.0.1";
+const apiTarget = new URL(process.env.WEWARDS_API_TARGET || "http://127.0.0.1:8000");
 const root = path.resolve(process.cwd(), "dist");
 
 const mimeTypes = new Map([
@@ -108,6 +108,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Churn frontend serving ${root} at http://${host}:${port}`);
+  console.log(`WEwards frontend serving ${root} at http://${host}:${port}`);
   console.log(`Proxying /api to ${apiTarget.href}`);
 });

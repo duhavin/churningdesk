@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 from collections.abc import Callable
 from itertools import islice
@@ -21,7 +22,7 @@ from urllib.parse import urlsplit, urlunsplit
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import card_references, config, models
+from .. import card_references, config, models, source_quality
 from ..logic.catalog import effective_catalog
 from . import extract, fetch, rendered_fetch, research_resolver, static_parse, validate
 
@@ -98,10 +99,26 @@ def _is_real_public_url(url: str | None) -> bool:
     return "anthropic web search" not in normalized.lower()
 
 
-def _best_real_source_url(row: extract.OfferScanRow, source_urls: list[str]) -> str | None:
+def _best_real_source_url(
+    row: extract.OfferScanRow,
+    source_urls: list[str],
+    product: models.CardProduct | None = None,
+) -> str | None:
     for candidate in [row.source_url, row.product_url, *source_urls]:
-        if _is_real_offer_url(candidate):
-            return _normalize_url(candidate)
+        if not _is_real_offer_url(candidate):
+            continue
+        if product is not None and not source_quality.is_safe_product_source(
+            product.issuer,
+            product.product_name,
+            candidate,
+            " ".join(
+                str(item or "")
+                for snippets in (row.evidence_snippets or {}).values()
+                for item in (snippets if isinstance(snippets, list) else [snippets])
+            ),
+        ):
+            continue
+        return _normalize_url(candidate)
     return None
 
 
@@ -123,6 +140,15 @@ def _promote_source_urls(db: Session, urls: list[str], product_id: int | None = 
     candidates = list(dict.fromkeys(_normalize_url(url) for url in urls if _is_real_offer_url(url)))
     if not candidates:
         return 0
+    product = db.get(models.CardProduct, product_id) if product_id else None
+    if product is not None:
+        candidates = [
+            url
+            for url in candidates
+            if source_quality.is_safe_product_source(product.issuer, product.product_name, url)
+        ]
+        if not candidates:
+            return 0
     existing = {
         _normalize_url(row.url)
         for row in db.scalars(select(models.SourceConfig)).all()
@@ -178,7 +204,13 @@ def product_source_urls(
     ).all()
     out: dict[int, list[str]] = {}
     for row in rows:
-        if row.url and row.product_id:
+        product = next((p for p in products if p.id == row.product_id), None)
+        if (
+            row.url
+            and row.product_id
+            and product is not None
+            and source_quality.is_safe_product_source(product.issuer, product.product_name, row.url)
+        ):
             out.setdefault(row.product_id, []).append(row.url)
     for product in products:
         ref_urls = card_references.reference_source_urls(db, product)
@@ -196,7 +228,9 @@ def _candidate_urls(
         return []
     urls: list[str] = []
     for product in products:
-        if product.source_url:
+        if product.source_url and source_quality.is_safe_product_source(
+            product.issuer, product.product_name, product.source_url
+        ):
             urls.append(product.source_url)
         urls.extend((product_sources or {}).get(product.id, []))
     urls.extend(source_urls)
@@ -209,7 +243,9 @@ def _product_render_urls(
 ) -> list[str]:
     urls: list[str] = []
     urls.extend(product_sources or [])
-    if product.source_url:
+    if product.source_url and source_quality.is_safe_product_source(
+        product.issuer, product.product_name, product.source_url
+    ):
         urls.append(product.source_url)
     return [
         url
@@ -302,6 +338,17 @@ def _eligibility_tags(text: str | None) -> list[str] | None:
         tags.append("sapphire_48mo")
     if "24 month" in low:
         tags.append("bonus_24mo")
+    if any(
+        phrase in low
+        for phrase in (
+            "closed to new applicants",
+            "no longer accepting applications",
+            "no longer available",
+            "stopped accepting applications",
+            "not accepting applications",
+        )
+    ):
+        tags.append("closed_to_new_applicants")
     return tags or None
 
 
@@ -457,6 +504,8 @@ def _has_supplemental_facts(row: extract.OfferScanRow) -> bool:
 
 def _has_variant_conflict(product: models.CardProduct, text: str | None) -> bool:
     """Reject close-name crossovers like personal Venture X vs Venture X Business."""
+    if source_quality.has_variant_conflict(product.issuer, product.product_name, text):
+        return True
     haystack = _identity_tokens(text)
     if not haystack:
         return False
@@ -494,42 +543,19 @@ def _source_allows_supplemental(row: extract.OfferScanRow, product: models.CardP
     url = row.source_url or row.product_url
     if not _is_real_public_url(url):
         return False
-    parsed = urlsplit(url)
-    path_text = re.sub(r"[^a-z0-9]+", " ", (parsed.path or "").lower())
-    host = (parsed.hostname or "").lower()
-    title_and_path = " ".join(
-        str(part or "")
-        for part in (
-            row.source_url,
-            row.product_url,
-            row.card_name,
-        )
+    evidence_text = " ".join(
+        str(item or "")
+        for snippets in (row.evidence_snippets or {}).values()
+        for item in (snippets if isinstance(snippets, list) else [snippets])
     )
-    if _has_variant_conflict(product, title_and_path):
+    if not source_quality.is_safe_product_source(
+        product.issuer,
+        product.product_name,
+        url,
+        evidence_text,
+    ):
         return False
-    product_tokens = {
-        token
-        for token in _identity_tokens(product.product_name)
-        if token not in {"card", "credit", "rewards", "reward", "from"}
-    }
-    token_hits = len(product_tokens.intersection(path_text.split()))
-    required_hits = 1 if len(product_tokens) == 1 else max(2, min(3, len(product_tokens)))
-    looks_product_specific = bool(product_tokens) and token_hits >= required_hits
-    if looks_product_specific:
-        return True
-    issuer_key = re.sub(r"[^a-z0-9]+", "", (product.issuer or "").lower())
-    official_hosts = {
-        "americanexpress": "americanexpress.com",
-        "chase": "chase.com",
-        "capitalone": "capitalone.com",
-        "citi": "citi.com",
-        "wellsfargo": "wellsfargo.com",
-        "bankofamerica": "bankofamerica.com",
-    }
-    official = official_hosts.get(issuer_key)
-    if official and official in host and row.source_priority == 1:
-        return True
-    return False
+    return True
 
 
 def _evidence_supports_product(product: models.CardProduct, snippets: list[str] | None) -> bool:
@@ -600,6 +626,9 @@ def _apply_scan_row(
             "scan_confidence": row.confidence,
             "offer_status": row.offer_status,
         }
+    closed_result = _apply_closed_to_new_row(db, product, row)
+    if closed_result is not None:
+        return closed_result
     row = _drop_unsupported_broad_fields(row, product)
     row = _drop_unsafe_supplemental(row, product)
     if not _can_apply(row):
@@ -626,6 +655,103 @@ def _apply_scan_row(
         }
     )
     return applied
+
+
+def _row_evidence_text(row: extract.OfferScanRow) -> str:
+    pieces = [
+        row.source_url,
+        row.product_url,
+        row.eligibility_language,
+        row.needs_review_reason,
+    ]
+    for snippets in (row.evidence_snippets or {}).values():
+        if isinstance(snippets, list):
+            pieces.extend(str(item or "") for item in snippets)
+        elif snippets:
+            pieces.append(str(snippets))
+    return " ".join(str(part or "") for part in pieces)
+
+
+def _is_closed_to_new_row(row: extract.OfferScanRow) -> bool:
+    tags = {str(tag).strip().lower() for tag in (row.eligibility_tags or [])}
+    tags.update(str(tag).strip().lower() for tag in (_eligibility_tags(row.eligibility_language) or []))
+    if "closed_to_new_applicants" in tags:
+        return True
+    text = _row_evidence_text(row).lower()
+    return any(
+        phrase in text
+        for phrase in (
+            "closed to new applicants",
+            "no longer accepting applications",
+            "no longer available",
+            "stopped accepting applications",
+            "not accepting applications",
+        )
+    )
+
+
+def _apply_closed_to_new_row(
+    db: Session,
+    product: models.CardProduct,
+    row: extract.OfferScanRow,
+) -> dict | None:
+    if row.offer_status != "expired" or not _is_closed_to_new_row(row):
+        return None
+    source_url = source_quality.normalize_url(row.source_url or row.product_url or product.source_url)
+    evidence_text = _row_evidence_text(row)
+    if not source_quality.is_verified_auto_adopt_source(
+        product.issuer,
+        product.product_name,
+        source_url,
+        evidence_text,
+    ):
+        return None
+
+    committed: list[str] = []
+    tags = list(dict.fromkeys([*(product.eligibility_tags or []), "closed_to_new_applicants"]))
+    if product.eligibility_tags != tags:
+        product.eligibility_tags = tags
+        committed.append("eligibility_tags")
+
+    for field in (
+        "current_offer_points",
+        "current_offer_cash",
+        "current_offer_min_spend",
+        "current_offer_window_months",
+        "current_offer_override",
+    ):
+        if getattr(product, field, None) is not None:
+            setattr(product, field, None)
+            committed.append(field)
+
+    if source_url and product.source_url != source_url:
+        product.source_url = source_url
+        committed.append("source_url")
+    product.last_verified = _utcnow()
+    db.add(
+        models.IngestionEvidence(
+            product_id=product.id,
+            field="eligibility_tags",
+            value_json=json.dumps(tags),
+            source_url=source_url,
+            fetched_at=row.fetched_at,
+            content_hash=row.content_hash,
+            confidence=row.confidence,
+            evidence_snippets=(row.evidence_snippets or {}).get("eligibility_language") or [evidence_text[:350]],
+            offer_status=row.offer_status,
+        )
+    )
+    db.flush()
+    return {
+        "committed": committed or ["eligibility_tags"],
+        "proposed": [],
+        "rejected": [],
+        "evidence_recorded": 1,
+        "note": "closed_to_new_applicants_official",
+        "source_url": source_url,
+        "scan_confidence": row.confidence,
+        "offer_status": row.offer_status,
+    }
 
 
 def _best_row(rows: list[extract.OfferScanRow], product: models.CardProduct | None = None) -> extract.OfferScanRow | None:
@@ -691,21 +817,35 @@ def _scan_product_static(
     rows: list[extract.OfferScanRow] = []
     compact_snippets: list[str] = []
     urls: list[str] = []
+    safe_product_sources = [
+        url
+        for url in (product_source_urls or [])
+        if source_quality.is_safe_product_source(product.issuer, product.product_name, url)
+    ]
+    safe_primary_source = (
+        product.source_url
+        if product.source_url
+        and source_quality.is_safe_product_source(product.issuer, product.product_name, product.source_url)
+        else None
+    )
     ordered_urls = []
-    ordered_urls.extend(product_source_urls or [])
-    if product.source_url:
-        ordered_urls.append(product.source_url)
+    ordered_urls.extend(safe_product_sources)
+    if safe_primary_source:
+        ordered_urls.append(safe_primary_source)
     ordered_urls.extend(source_urls)
-    product_specific_urls = list(product_source_urls or [])
-    if product.source_url:
-        product_specific_urls.append(product.source_url)
+    product_specific_urls = list(safe_product_sources)
+    if safe_primary_source:
+        product_specific_urls.append(safe_primary_source)
 
     for url in dict.fromkeys(ordered_urls):
         page = pages_by_url.get(url)
         if not page:
             continue
         assume_product_page = any(
-            _same_url(url, product_url) or _same_url(page.final_url, product_url)
+            (
+                (_same_url(url, product_url) or _same_url(page.final_url, product_url))
+                and source_quality.is_safe_product_source(product.issuer, product.product_name, product_url)
+            )
             for product_url in product_specific_urls
         )
         snippets = static_parse.snippets_for_card(
@@ -780,12 +920,7 @@ def _has_current_offer(product: models.CardProduct) -> bool:
 
 
 def _has_peak_offer(product: models.CardProduct) -> bool:
-    return bool(
-        product.peak_offer_points
-        or product.peak_offer_min_spend
-        or product.targeted_peak_offer_points
-        or product.targeted_peak_offer_cash
-    )
+    return bool(product.peak_offer_points)
 
 
 def _needs_offer_backfill(product: models.CardProduct) -> bool:
@@ -879,6 +1014,7 @@ def run_refresh(
     priority_product_variants: list[tuple[str, str]] | None = None,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
+    review_cleanup = validate.cleanup_bad_pending_changes(db)
     if valuations_only:
         valuations = backfill_valuations(db)
         if progress_callback:
@@ -926,6 +1062,7 @@ def run_refresh(
             },
             "peaks_filled": 0,
             "valuations_added": valuations,
+            "review_cleanup": review_cleanup,
         }
 
     all_products = effective_catalog(db)
@@ -1508,7 +1645,7 @@ def run_refresh(
                     note_result(product, row, "web_search", requeue_web=False)
                     publish_progress("web_search_batch", len(result_index), _product_label(product))
                     continue
-                source = _best_real_source_url(row, source_urls) or ""
+                source = _best_real_source_url(row, source_urls, product) or ""
                 if source:
                     row.source_url = source
                 else:
@@ -1528,14 +1665,22 @@ def run_refresh(
                     note_result(product, row, "web_search", requeue_web=False)
                     publish_progress("web_search_batch", len(result_index), _product_label(product))
                     continue
-                ext = _row_to_extraction(row)
-                applied = validate.apply_extraction(db, product, ext, source, commit=False)
-                if source:
+                row.source_url = source
+                applied = _apply_scan_row(db, product, row)
+                if source and applied.get("committed") and source_quality.is_safe_product_source(
+                    product.issuer,
+                    product.product_name,
+                    source,
+                    " ".join(
+                        str(item or "")
+                        for snippets in (row.evidence_snippets or {}).values()
+                        for item in (snippets if isinstance(snippets, list) else [snippets])
+                    ),
+                ):
                     product.source_url = source
                     source_urls_promoted += _promote_source_urls(db, [source], product_id=product.id)
                     if card_references.promote_reference_url(db, product, source):
                         reference_urls_promoted += 1
-                row.changed_fields = list(dict.fromkeys(applied.get("committed", []) + applied.get("proposed", [])))
                 strict_rows.append(row)
                 add_result(product, applied, row, "web_search")
                 web_candidates.pop(product.id, None)
@@ -1551,6 +1696,7 @@ def run_refresh(
         or peak_fields.intersection(item["result"].get("proposed", []))
     )
     valuations = backfill_valuations(db) if (products and refresh_valuations) else 0
+    review_cleanup = validate.cleanup_bad_pending_changes(db)
     cache_hits = sum(1 for page in fetched_pages.values() if page.from_cache)
     committed_count = sum(len(x["result"].get("committed", [])) for x in results)
     proposed_count = sum(len(x["result"].get("proposed", [])) for x in results)
@@ -1637,6 +1783,7 @@ def run_refresh(
         },
         "peaks_filled": peaks_filled,
         "valuations_added": valuations,
+        "review_cleanup": review_cleanup,
     }
 
 

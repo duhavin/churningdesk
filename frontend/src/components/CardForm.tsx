@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Field, Modal, cardName } from "./ui";
-import type { CatalogEntry, HeldCard } from "../lib/api";
+import type { CardReference, CatalogEntry, HeldCard } from "../lib/api";
 
 const OWNERSHIP = ["Personal", "Business"];
 const ACCOUNT_TYPES = ["Credit Card", "Charge Card", "Flexible Spending Credit Card"];
@@ -12,6 +12,7 @@ export function CardForm({
   onSubmit,
   user,
   catalog,
+  references = [],
   initial,
   prefill,
 }: {
@@ -20,6 +21,7 @@ export function CardForm({
   onSubmit: (payload: any) => Promise<void>;
   user: string;
   catalog: CatalogEntry[];
+  references?: CardReference[];
   initial?: HeldCard | null;
   prefill?: Record<string, any> | null;
 }) {
@@ -51,6 +53,8 @@ export function CardForm({
   };
 
   const [f, setF] = useState<any>(initial ? { ...blank, ...initial } : prefill ? { ...blank, ...prefill } : blank);
+  const [quickQuery, setQuickQuery] = useState("");
+  const [quickOpen, setQuickOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -58,26 +62,91 @@ export function CardForm({
   useEffect(() => {
     if (!open) return;
     setF(initial ? { ...blank, ...initial } : prefill ? { ...blank, ...prefill } : blank);
+    setQuickQuery("");
+    setQuickOpen(false);
     setErr(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initial, prefill]);
 
   const set = (k: string, v: any) => setF((p: any) => ({ ...p, [k]: v }));
-  const catalogOption = (c: CatalogEntry) => `${c.issuer} - ${cardName(c)}`;
+  const catalogOption = (c: Pick<CatalogEntry, "issuer" | "product_name" | "display_name">) => `${c.issuer} - ${cardName(c)}`;
 
-  const onPickCatalog = (name: string) => {
-    const match = catalog.find((c) => catalogOption(c) === name || `${c.issuer} - ${c.product_name}` === name);
-    if (match) {
+  const optionRows = useMemo(() => {
+    const catalogByKey = new Map(catalog.map((c) => [c.canonical_key, c]));
+    return [
+      ...catalog.map((c) => ({
+        identity: c.canonical_key || `catalog-${c.id}`,
+        value: catalogOption(c),
+        label: cardName(c),
+        sublabel: [c.issuer, c.product_name, c.ownership, c.currency].filter(Boolean).join(" | "),
+        searchText: [c.issuer, cardName(c), c.product_name, c.currency, c.ownership].filter(Boolean).join(" "),
+        catalog: c,
+        reference: null as CardReference | null,
+      })),
+      ...references
+        .filter((r) => r.active !== false)
+        .map((r) => {
+          const catalogMatch = r.canonical_key ? catalogByKey.get(r.canonical_key) : undefined;
+          return {
+            identity: r.canonical_key || `reference-${r.id}`,
+            value: catalogOption(r),
+            label: cardName(r),
+            sublabel: [r.issuer, r.product_name, r.ownership, r.currency, "reference"].filter(Boolean).join(" | "),
+            searchText: [
+              r.issuer,
+              cardName(r),
+              r.product_name,
+              r.currency,
+              r.ownership,
+              ...(r.aliases ?? []),
+              ...(r.search_terms ?? []),
+            ]
+              .filter(Boolean)
+              .join(" "),
+            catalog: catalogMatch ?? null,
+            reference: r,
+          };
+        }),
+    ].filter((row, index, rows) => rows.findIndex((other) => other.identity === row.identity) === index);
+  }, [catalog, references]);
+
+  const quickResults = useMemo(() => {
+    const tokens = quickQuery
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    const rows = optionRows
+      .map((row) => {
+        const haystack = row.searchText.toLowerCase();
+        const exact = row.label.toLowerCase() === quickQuery.trim().toLowerCase() ? 50 : 0;
+        const starts = row.label.toLowerCase().startsWith(quickQuery.trim().toLowerCase()) ? 20 : 0;
+        const tokenScore = tokens.reduce((sum, token) => sum + (haystack.includes(token) ? 10 : -100), 0);
+        return { row, score: exact + starts + tokenScore };
+      })
+      .filter((item) => tokens.length === 0 || item.score >= tokens.length * 8)
+      .sort((a, b) => b.score - a.score || a.row.label.localeCompare(b.row.label))
+      .map((item) => item.row);
+    return rows.slice(0, 12);
+  }, [optionRows, quickQuery]);
+
+  const applyOption = (row: (typeof optionRows)[number]) => {
+    const match = row?.catalog ?? null;
+    const reference = row?.reference ?? null;
+    const source = match ?? reference;
+    if (source) {
       setF((p: any) => ({
         ...p,
-        issuer: match.issuer,
-        product_name: p.product_name?.trim() ? p.product_name : cardName(match),
-        product_id: match.id,
-        ownership: match.ownership,
-        account_type: match.account_type,
-        annual_fee: match.annual_fee ?? p.annual_fee,
-        min_spend_requirement: match.current_offer_min_spend ?? p.min_spend_requirement,
+        issuer: source.issuer,
+        product_name: source.product_name,
+        product_id: match?.id ?? null,
+        ownership: source.ownership ?? p.ownership,
+        account_type: source.account_type ?? p.account_type,
+        reports_to_personal_credit: source.reports_to_personal_credit ?? p.reports_to_personal_credit,
+        annual_fee: match?.annual_fee ?? p.annual_fee,
+        min_spend_requirement: match?.current_offer_min_spend ?? p.min_spend_requirement,
       }));
+      setQuickQuery(row.value);
+      setQuickOpen(false);
     }
   };
 
@@ -131,17 +200,34 @@ export function CardForm({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="col-span-full">
           <Field label="Quick-fill from catalog (optional)">
-            <input
-              className="input"
-              list="catalog-list"
-              placeholder="Type to search the catalog…"
-              onChange={(e) => onPickCatalog(e.target.value)}
-            />
-            <datalist id="catalog-list">
-              {catalog.map((c) => (
-                <option key={c.id} value={catalogOption(c)} />
-              ))}
-            </datalist>
+            <div className="relative">
+              <input
+                className="input"
+                value={quickQuery}
+                placeholder="Search Amex, Bilt, Sapphire, Venture..."
+                onFocus={() => setQuickOpen(true)}
+                onChange={(e) => {
+                  setQuickQuery(e.target.value);
+                  setQuickOpen(true);
+                }}
+              />
+              {quickOpen && quickResults.length > 0 && (
+                <div className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-ink-400/70 bg-ink-800 p-1 shadow-xl">
+                  {quickResults.map((row) => (
+                    <button
+                      key={row.catalog ? `catalog-${row.catalog.id}` : `reference-${row.reference?.id}`}
+                      type="button"
+                      className="settings-menu-item w-full rounded-md px-2 py-2 text-left"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyOption(row)}
+                    >
+                      <div className="text-sm font-medium text-slate-100">{row.label}</div>
+                      <div className="text-[11px] text-slate-500">{row.sublabel}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </Field>
         </div>
 

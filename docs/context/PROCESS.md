@@ -27,12 +27,15 @@ private/login/CAPTCHA pages and is not the default refresh path.
 
 ## 3. Verify / gate (don't trust blindly)
 - `backend/ingestion/validate.py` — delta-gating: first sight commits with provenance;
-  large offer changes (> threshold) and any eligibility-rule change go to a **review queue**
-  (`ProposedChange`). Targeted/incognito highs are split from public peak; peak is monotonic
-  (raise freely, review decreases); valuation pages can't write offer fields; every field
-  logs `IngestionEvidence` (source_url, snippet, fetched_at, hash, confidence).
-- **Human-in-the-loop:** the review queue (Card Universe tab) is where a person approves/
-  rejects proposed changes. Unknown/unsupported → `NEEDS DATA`, never a fabricated value.
+  high-confidence official product-page current offer terms can auto-adopt. Broad,
+  conflicting, ambiguous, or unsupported large offer changes and any eligibility-rule change
+  go to a **review queue** (`ProposedChange`). Targeted/incognito highs are split from
+  public peak; peak is monotonic (raise freely, review decreases); valuation pages can't
+  write offer fields; every field logs `IngestionEvidence` (source_url, snippet, fetched_at,
+  hash, confidence).
+- **Human-in-the-loop:** the review queue (Card Universe tab) remains the backstop for
+  ambiguous or unsupported changes. Unknown/unsupported → `NEEDS DATA`, never a fabricated
+  value.
 
 ## 4. Decide (data → conclusions)
 - `backend/logic/eligibility.py` — timing rules from `date_opened` (5/24, Amex lifetime/
@@ -55,7 +58,8 @@ private/login/CAPTCHA pages and is not the default refresh path.
 - New held-card state recomputes eligibility/scoring/pipeline automatically. Periodic
   refresh keeps offers/peaks current; web search is the cached last resort, not routine.
 
-**Human stays in the loop at:** review queue (data accuracy) and the apply decision.
+**Human stays in the loop at:** ambiguous review-queue changes and the real apply decision.
+High-confidence official-source refreshes should update automatically.
 Everything else is automated.
 
 ## Research resolver note

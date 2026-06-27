@@ -13,10 +13,13 @@ from backend.logic import benefits, catalog as catalog_logic, pipeline
 class BenefitTrackerTests(unittest.TestCase):
     def setUp(self):
         self._old_key = config.FERNET_KEY
+        self._old_users = config.USERS
         config.FERNET_KEY = Fernet.generate_key().decode("utf-8")
+        config.USERS = ["User A", "User B"]
 
     def tearDown(self):
         config.FERNET_KEY = self._old_key
+        config.USERS = self._old_users
 
     def test_user_benefit_tracker_uses_verified_public_benefits_and_private_usage(self):
         db = self._session()
@@ -175,6 +178,56 @@ class BenefitTrackerTests(unittest.TestCase):
         self.assertIn("10,000 anniversary bonus miles", names)
         self.assertFalse(any("json-ld" in name.lower() for name in names))
         self.assertFalse(any("review" in name.lower() for name in names))
+
+    def test_benefit_tracker_filters_editorial_disclosure_noise(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="American Express",
+            product_name="American Express Gold Card",
+            card_benefits=[
+                {
+                    "name": "While we don\u2019t cover all available credit cards, our...",
+                    "frequency": "unknown",
+                    "description": "While we don\u2019t cover all available credit cards, our editorial team creates and maintains our analysis of cards.",
+                    "evidence": "While we don\u2019t cover all available credit cards, our editorial team creates and maintains our analysis of cards.",
+                },
+                {
+                    "name": "Editorial content is not influenced by nor subject to...",
+                    "frequency": "unknown",
+                    "description": "Editorial content is not influenced by nor subject to review by any credit card company, bank or partner.",
+                    "evidence": "Editorial content is not influenced by nor subject to review by any credit card company, bank or partner.",
+                },
+                "Enrollment required. Earn up to $7 in monthly statement credits after you pay with the American Express Gold Card at U.S. Dunkin locations.",
+            ],
+            source_url="https://www.americanexpress.com/us/credit-cards/card/gold-card/",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+        db.add(
+            models.HeldCard(
+                user="User A",
+                issuer=product.issuer,
+                product_name=product.product_name,
+                product_id=product.id,
+                date_opened=dt.date.today(),
+                status="Active",
+            )
+        )
+        db.commit()
+
+        tracker = benefits.build_user_benefit_tracker(db, "User A")
+        labels = [row["benefit_label"] for row in tracker["benefits"]]
+        text = " ".join(
+            str(row.get(key) or "")
+            for row in tracker["benefits"]
+            for key in ("benefit_name", "description")
+        ).lower()
+
+        self.assertIn("Dunkin monthly credit", labels)
+        self.assertNotIn("while we", text)
+        self.assertNotIn("editorial content", text)
 
     def test_benefit_labels_are_specific_and_filter_payment_plan_noise(self):
         db = self._session()

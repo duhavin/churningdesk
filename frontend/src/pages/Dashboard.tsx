@@ -88,7 +88,7 @@ export function Dashboard({
       ),
     [dashboards],
   );
-  const activeCards = cards.filter((c) => c.status !== "Closed");
+  const activeCards = cards.filter((c) => !["closed", "cancelled", "canceled"].includes(String(c.status || "").toLowerCase()));
   const adminUser = users[0];
   const attention = dashboards.flatMap((d) =>
     (d.needs_attention ?? [])
@@ -96,8 +96,12 @@ export function Dashboard({
       .map((a: any) => ({ ...a, user: d.user })),
   );
   const immediateStatuses = new Set(["APPLY NOW", "WATCH"]);
-  const moves = (household?.moves ?? []).filter((m: any) => immediateStatuses.has(String(m.status))).slice(0, 6);
-  const referrals = (household?.referrals ?? []).filter((r: any) => ["APPLY NOW", "WATCH"].includes(r.recipient_status)).slice(0, 4);
+  const moves = (household?.moves ?? [])
+    .filter((m: any) => m.decision_ready !== false && immediateStatuses.has(String(m.status)))
+    .slice(0, 6);
+  const referrals = (household?.referrals ?? [])
+    .filter((r: any) => r.decision_ready !== false && ["APPLY NOW", "WATCH"].includes(r.recipient_status))
+    .slice(0, 4);
   const annualFees = activeCards.reduce((sum, c) => sum + (c.annual_fee ?? 0), 0);
   const catalogById = useMemo(() => new Map(catalog.map((row) => [row.id, row])), [catalog]);
   const referenceByKey = useMemo(() => new Map(references.map((row) => [row.canonical_key, row])), [references]);
@@ -215,7 +219,7 @@ export function Dashboard({
                 </Card>
               ))}
             </div>
-            <Card className="soft-scroll hidden max-h-[520px] overflow-x-auto p-0 md:block">
+            <Card className="dashboard-cards-surface soft-scroll hidden max-h-[520px] overflow-x-auto p-0 md:block">
               <table className="w-full">
                 <thead>
                   <tr>
@@ -228,7 +232,7 @@ export function Dashboard({
                 </thead>
                 <tbody>
                   {activeCards.map((h) => (
-                    <tr key={`${h.user}-${h.id}`} className="hover:bg-ink-600/40">
+                    <tr key={`${h.user}-${h.id}`} className="dashboard-card-row">
                       <td className="td">
                         <div className="font-medium text-slate-100">{cardName(h)}</div>
                         <div className="text-[11px] text-slate-500">
@@ -265,7 +269,7 @@ export function Dashboard({
               {attention.map((a: any, i: number) => (
                 <button
                   key={i}
-                  className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${SEV[a.severity] ?? SEV.info} ${
+                  className={`dashboard-attention-row w-full rounded-lg border px-3 py-2 text-left text-sm ${SEV[a.severity] ?? SEV.info} ${
                     canOpenBenefit(a) ? "transition-colors hover:bg-cyan-accent/10" : ""
                   }`}
                   onClick={() => openAttention(a)}
@@ -323,7 +327,7 @@ export function Dashboard({
                           <div className="min-w-0 flex-1">
                             <div className="mb-1 flex min-w-0 items-center gap-1.5">
                               <UserPill user={m.user} />
-                              <span className="truncate text-[11px] text-slate-500">{m.referral_from ? `via ${m.referral_from}` : "direct"}</span>
+                              <span className="truncate text-[11px] text-slate-500">{m.route ?? (m.referral_from ? `Refer via ${m.referral_from}` : "Direct application")}</span>
                             </div>
                             <div className="truncate text-[13px] font-medium leading-5 text-slate-100">{cardName(m)}</div>
                             <div className="text-[11px] text-slate-500">{m.issuer} | peak {m.peak_score}</div>
@@ -343,7 +347,7 @@ export function Dashboard({
                         >
                           <div className="line-clamp-4">{m.reason}</div>
                           <div className="flex flex-wrap gap-x-3 gap-y-1">
-                            <span>{m.referral_from ? `Referral via ${m.referral_from}` : "Direct application"}</span>
+                            <span>{m.route ?? (m.referral_from ? `Referral via ${m.referral_from}` : "Direct application")}</span>
                             <span>{pointsBreakdownForMove(m)}</span>
                             <span>Est. {fmtMoney(m.household_value)}</span>
                             <span>Peak {m.peak_score}</span>
@@ -428,52 +432,58 @@ export function Dashboard({
           {moves.length === 0 ? (
             <div className="px-4 pb-4 text-sm text-slate-500">No APPLY NOW or WATCH applications are ranked right now.</div>
           ) : (
-            <>
-            <div className="soft-scroll max-h-[360px] space-y-1 px-2.5 pb-2.5 pr-1 md:hidden">
-              {moves.map((m: any) => (
-                <div key={`${m.user}-${m.id}`} className="rounded-lg border border-ink-400/50 bg-ink-800/40 px-2.5 py-1.5">
-                  <div className="flex min-w-0 items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[11px] uppercase tracking-wide text-slate-500">{m.user} | {m.referral_from ? `via ${m.referral_from}` : "direct"}</div>
-                      <div className="truncate text-[13px] font-medium leading-5 text-slate-100">{cardName(m)}</div>
-                      <div className="text-[11px] text-slate-500">{m.issuer} | peak {m.peak_score}</div>
+            <div className="soft-scroll max-h-[360px] space-y-2 px-3 pb-3 pr-1">
+              {moves.map((m: any) => {
+                const key = `desktop-move-${m.user}-${m.id}`;
+                const isOpen = Boolean(expandedAction[key]);
+                const url = applyUrl(m.id);
+                return (
+                  <div
+                    key={key}
+                    className="dashboard-action-row cursor-pointer rounded-lg border border-ink-400/50 px-3 py-2 transition-colors hover:border-ink-400"
+                    onClick={() => toggleExpanded(key)}
+                  >
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex min-w-0 items-center gap-1.5">
+                          <UserPill user={m.user} />
+                          <span className="truncate text-[11px] text-slate-500">{m.route ?? (m.referral_from ? `Refer via ${m.referral_from}` : "Direct application")}</span>
+                        </div>
+                        <div className="truncate text-sm font-medium text-slate-100">{cardName(m)}</div>
+                        <div className="text-[11px] text-slate-500">{m.issuer} | peak {m.peak_score}</div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <StatusBadge status={m.status} />
+                        {m.is_exceptional && <RareBadge />}
+                        <span className={`text-lg text-slate-500 transition-transform ${isOpen ? "rotate-90" : ""}`}>&rsaquo;</span>
+                      </div>
                     </div>
-                    <StatusBadge status={m.status} />
+                    <div className="mt-1 text-sm font-semibold text-cyan-accent">{pointsForMove(m)}</div>
+                    {isOpen && (
+                      <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
+                        <div>{m.reason}</div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1">
+                          <span>{pointsBreakdownForMove(m)}</span>
+                          <span>Est. {fmtMoney(m.household_value)}</span>
+                          {m.current_offer_min_spend ? <span>Spend {fmtMoney(m.current_offer_min_spend)} / {m.current_offer_window_months ?? "?"} mo</span> : null}
+                        </div>
+                        {url && (
+                          <a
+                            className="btn-success h-8 justify-center px-3 text-xs"
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            Apply now
+                          </a>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="mt-0.5 font-mono text-xs text-emerald-300">{fmtMoney(m.household_value)}</div>
-                </div>
-              ))}
+                );
+              })}
             </div>
-            <table className="hidden w-full md:table">
-              <thead>
-                <tr>
-                  <th className="th">User</th>
-                  <th className="th">Card</th>
-                  <th className="th">Route</th>
-                  <th className="th">Status</th>
-                  <th className="th text-right">Points</th>
-                </tr>
-              </thead>
-              <tbody>
-                {moves.map((m: any) => (
-                  <tr key={`${m.user}-${m.id}`}>
-                    <td className="td text-slate-100">{m.user}</td>
-                    <td className="td">
-                      <div className="text-slate-100">{cardName(m)}</div>
-                      <div className="text-[11px] text-slate-500">{m.issuer} | peak {m.peak_score}</div>
-                    </td>
-                    <td className="td text-slate-300">{m.referral_from ? `Refer via ${m.referral_from}` : "Direct"}</td>
-                    <td className="td"><StatusBadge status={m.status} /></td>
-                    <td className="td text-right">
-                      <div className="font-semibold text-cyan-accent">{pointsForMove(m)}</div>
-                      <div className="text-[11px] text-slate-500">{pointsBreakdownForMove(m)}</div>
-                      <div className="text-[11px] text-slate-500">{fmtMoney(m.household_value)}</div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </>
           )}
         </Card>
 
@@ -483,18 +493,47 @@ export function Dashboard({
             <p className="text-sm text-slate-500">No referral route is currently ranked as APPLY NOW or WATCH.</p>
           ) : (
             <div className="soft-scroll max-h-[320px] space-y-2 pr-1">
-              {referrals.map((r: any, i: number) => (
-                <div key={i} className="rounded-lg border border-ink-400/50 bg-ink-800/40 px-3 py-2">
-                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                    <span className="chip bg-cyan-accent/15 text-cyan-accent">{r.from_user} -&gt; {r.to_user}</span>
-                    <span className="min-w-0 truncate text-sm font-medium text-slate-100">{cardName(r)}</span>
+              {referrals.map((r: any, i: number) => {
+                const key = `desktop-referral-${i}-${r.id}`;
+                const isOpen = Boolean(expandedAction[key]);
+                const url = applyUrl(r.id);
+                return (
+                  <div
+                    key={key}
+                    className="dashboard-action-row cursor-pointer rounded-lg border border-ink-400/50 px-3 py-2 transition-colors hover:border-ink-400"
+                    onClick={() => toggleExpanded(key)}
+                  >
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                          <UserPill user={r.from_user} />
+                          <span className="text-[11px] text-slate-500">refer {r.to_user}</span>
+                        </div>
+                        <div className="truncate text-sm font-medium text-slate-100">{cardName(r)}</div>
+                        <div className="mt-1 text-xs font-semibold text-emerald-300">{pointsForReferral(r)}</div>
+                      </div>
+                      <span className={`shrink-0 text-lg text-slate-500 transition-transform ${isOpen ? "rotate-90" : ""}`}>&rsaquo;</span>
+                    </div>
+                    {isOpen && (
+                      <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
+                        <div>{r.reason}</div>
+                        <div>Estimated household value {fmtMoney(r.household_gain)}</div>
+                        {url && (
+                          <a
+                            className="btn-success h-8 justify-center px-3 text-xs"
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            Apply now
+                          </a>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="mt-1 text-xs text-slate-400">
-                    {pointsForReferral(r)}
-                    <span className="text-slate-500"> | estimated {fmtMoney(r.household_gain)}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </Card>

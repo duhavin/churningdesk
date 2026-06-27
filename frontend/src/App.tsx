@@ -70,8 +70,8 @@ const MY_CARDS_SEGMENTS = ["Profile", "Discover"] as const;
 type MobileTab = (typeof MOBILE_TABS)[number];
 type MobileIconName = "home" | "cards" | "pipeline" | "benefits" | "travel";
 type ThemeMode = "light" | "dark";
-const THEME_STORAGE_KEY = "churn-theme-v3";
-const PROFILE_THEME_STORAGE_PREFIX = "churn-profile-theme-v1:";
+const THEME_STORAGE_KEY = "wewards-theme-v3";
+const PROFILE_THEME_STORAGE_PREFIX = "wewards-profile-theme-v1:";
 
 function storedTheme(value: string | null): ThemeMode | null {
   return value === "dark" || value === "light" ? value : null;
@@ -229,7 +229,7 @@ function WelcomeScreen({
           <div className="mx-auto mb-5 h-10 w-10 rounded-xl border border-cyan-accent/30 bg-cyan-accent/10 p-2">
             <div className="h-full w-full rounded-md bg-gradient-to-br from-cyan-accent to-pink-accent" />
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-100">Welcome to Churn</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-100">Welcome to WEwards</h1>
           <p className="mt-2 text-sm leading-6 text-slate-500">
             Household card strategy, points, benefits, and next moves in one place.
           </p>
@@ -478,7 +478,8 @@ export default function App() {
         throw new Error(r?.errors?.[0]?.error ?? "Refresh did not return a result.");
       }
       if (r.scan?.mode === "valuations_only") {
-        flash("info", `Valuations refreshed: ${r.valuations_added ?? 0} sourced value(s) added.`);
+        const rejected = num(r.review_cleanup?.rejected_count);
+        flash("info", `Valuations refreshed: ${r.valuations_added ?? 0} sourced value(s) added${rejected ? `, ${rejected} noisy review item(s) rejected` : ""}.`);
         setBump((b) => b + 1);
         return;
       }
@@ -490,6 +491,7 @@ export default function App() {
       const cardsResolved = num(r.scan?.cards_resolved);
       const cooldownSkipped = num(r.scan?.web_search_cooldown_skipped) + num(r.scan?.supplemental_search_cooldown_skipped);
       const renderedPages = num(r.scan?.rendered_pages);
+      const rejectedReviewItems = num(r.review_cleanup?.rejected_count);
       const checked = r.refreshed_count ?? r.products_checked ?? r.results.length;
       const parts = [
         `Refresh checked ${checked} card(s)`,
@@ -501,6 +503,7 @@ export default function App() {
       if (needsData) parts.push(`${needsData} need data`);
       if (r.peaks_filled) parts.push(`${r.peaks_filled} peak(s) filled`);
       if (r.valuations_added) parts.push(`${r.valuations_added} valuation(s) added`);
+      if (rejectedReviewItems) parts.push(`${rejectedReviewItems} noisy review item(s) rejected`);
       if (deferred) parts.push(`${deferred} deferred`);
       if (cooldownSkipped) parts.push(`${cooldownSkipped} cooldown skip(s)`);
       if (notices) parts.push(`${notices} notice${notices === 1 ? "" : "s"}`);

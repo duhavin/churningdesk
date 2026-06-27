@@ -21,7 +21,7 @@ from lxml import html
 
 from sqlalchemy.orm import Session
 
-from .. import card_references, config, models
+from .. import card_references, config, models, source_quality
 from ..product_identity import product_display_name, product_reference
 from . import extract, fetch, static_parse, validate
 
@@ -125,7 +125,7 @@ class SearchCache:
     """Tiny JSON cache for search query text + cited source URLs."""
 
     def __init__(self, root: Path | None = None, ttl_days: int = SEARCH_CACHE_TTL_DAYS) -> None:
-        self.root = root or Path(os.getenv("CHURN_SEARCH_CACHE_DIR", "data/search_cache"))
+        self.root = root or Path(os.getenv("WEWARDS_SEARCH_CACHE_DIR", "data/search_cache"))
         self.root.mkdir(parents=True, exist_ok=True)
         self.index_path = self.root / "index.json"
         self.ttl_days = ttl_days
@@ -669,7 +669,16 @@ def _adapter_row_for_page(
 
 def _safe_supplemental_source(product: models.CardProduct, row: extract.OfferScanRow) -> bool:
     url = row.source_url or row.product_url
-    if not url or _has_variant_conflict(product, f"{url} {row.product_url or ''}"):
+    evidence_text = " ".join(
+        str(item or "")
+        for snippets in (row.evidence_snippets or {}).values()
+        for item in (snippets if isinstance(snippets, list) else [snippets])
+    )
+    if (
+        not url
+        or _has_variant_conflict(product, f"{url} {row.product_url or ''} {evidence_text}")
+        or not source_quality.is_safe_product_source(product.issuer, product.product_name, url, evidence_text)
+    ):
         return False
     kind = _source_kind(url, product.issuer)
     if kind == "issuer" and row.source_priority == 1:

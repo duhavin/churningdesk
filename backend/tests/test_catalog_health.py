@@ -95,6 +95,103 @@ class CatalogHealthTests(unittest.TestCase):
         self.assertIn("pending_review", issue_codes)
         self.assertIn("source_stale", issue_codes)
 
+    def test_min_spend_only_is_not_current_offer(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Chase",
+            product_name="Chase Sapphire Preferred Card",
+            currency="Chase Ultimate Rewards",
+            current_offer_min_spend=5000,
+            peak_offer_points=100000,
+            source_url="https://creditcards.chase.com/rewards-credit-cards/sapphire/preferred",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        )
+        db.add_all(
+            [
+                product,
+                models.Valuation(currency="Chase Ultimate Rewards", cpp_scraped=1.8),
+            ]
+        )
+        db.commit()
+
+        health = catalog_health.build_catalog_health(db)
+        row = health["products"][0]
+        issue_codes = {issue["code"] for issue in row["issues"]}
+
+        self.assertIn("missing_current_offer", issue_codes)
+        self.assertEqual(row["status"], "needs_data")
+
+    def test_peak_min_spend_only_is_not_public_peak(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Chase",
+            product_name="Chase Sapphire Preferred Card",
+            currency="Chase Ultimate Rewards",
+            current_offer_points=80000,
+            current_offer_min_spend=5000,
+            peak_offer_min_spend=5000,
+            source_url="https://creditcards.chase.com/rewards-credit-cards/sapphire/preferred",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        )
+        db.add_all(
+            [
+                product,
+                models.Valuation(currency="Chase Ultimate Rewards", cpp_scraped=1.8),
+            ]
+        )
+        db.commit()
+
+        health = catalog_health.build_catalog_health(db)
+        row = health["products"][0]
+        issue_codes = {issue["code"] for issue in row["issues"]}
+
+        self.assertIn("missing_public_peak", issue_codes)
+        self.assertEqual(row["status"], "needs_data")
+
+    def test_unsafe_source_quality_issue_is_not_healthy(self):
+        cases = [
+            (
+                "https://www.doctorofcredit.com/best-current-credit-card-sign-bonuses/",
+                "broad_source_not_product_truth",
+            ),
+            (
+                "https://www.example.com/cards/sapphire",
+                "source_not_product_specific",
+            ),
+            (
+                "https://creditcards.chase.com/business-credit-cards/sapphire/reserve",
+                "source_identity_conflict",
+            ),
+        ]
+        for source_url, expected_issue in cases:
+            with self.subTest(expected_issue=expected_issue):
+                db = self._session()
+                product = models.CardProduct(
+                    issuer="Chase",
+                    product_name="Chase Sapphire Preferred Card",
+                    currency="Chase Ultimate Rewards",
+                    current_offer_points=80000,
+                    peak_offer_points=100000,
+                    card_benefits=["$50 annual hotel credit"],
+                    earn_multipliers={"dining": 3},
+                    source_url=source_url,
+                    last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+                )
+                db.add_all(
+                    [
+                        product,
+                        models.Valuation(currency="Chase Ultimate Rewards", cpp_scraped=1.8),
+                    ]
+                )
+                db.commit()
+
+                health = catalog_health.build_catalog_health(db)
+                row = health["products"][0]
+                issue_codes = {issue["code"] for issue in row["issues"]}
+
+                self.assertIn(expected_issue, issue_codes)
+                self.assertEqual(row["status"], "needs_data")
+
     def _session(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)

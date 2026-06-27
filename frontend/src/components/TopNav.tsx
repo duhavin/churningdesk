@@ -65,7 +65,7 @@ export function TopNav({
         <div className="flex min-w-0 items-center gap-2 md:w-auto md:shrink-0 md:pr-3">
           <div className="flex shrink-0 items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-sm bg-gradient-to-br from-cyan-accent to-pink-accent" />
-            <span className="font-semibold tracking-tight text-slate-100">Churn</span>
+            <span className="font-semibold tracking-tight text-slate-100">WEwards</span>
           </div>
           <div className="ml-auto flex items-center gap-2 md:hidden">
             <TopControls
@@ -169,7 +169,7 @@ function TopControls({
     <>
       <div className="relative" data-top-menu-root="run">
         <button
-          className="btn-primary px-2.5 py-1 text-xs sm:px-3 sm:py-1.5 sm:text-sm"
+          className="btn-ghost px-2.5 py-1 text-xs sm:px-3 sm:py-1.5 sm:text-sm"
           onClick={() => {
             setSettingsOpen(false);
             setRunOpen((o) => !o);
@@ -196,11 +196,11 @@ function TopControls({
             />
             <RunItem
               label="Refresh offers"
-              hint="Static/cache first, no web fallback"
+              hint="Static/cache first, also refreshes missing valuations"
               disabled={!llmOk || running}
               onClick={() => {
                 setRunOpen(false);
-                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_web_search: false, refresh_valuations: false });
+                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_web_search: false, refresh_valuations: true });
               }}
             />
             <RunItem
@@ -209,7 +209,7 @@ function TopControls({
               disabled={!llmOk || !webOk || running}
               onClick={() => {
                 setRunOpen(false);
-                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_rendered_fallback: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: false });
+                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_rendered_fallback: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: true });
               }}
             />
             <RunItem
@@ -322,7 +322,7 @@ function RunItem({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="w-full rounded-md px-2 py-2 text-left hover:bg-ink-600 disabled:opacity-40 disabled:cursor-not-allowed"
+      className="settings-menu-item w-full rounded-md px-2 py-2 text-left disabled:opacity-40 disabled:cursor-not-allowed"
     >
       <div className="text-sm text-slate-100">{label}</div>
       <div className="text-[11px] text-slate-500">{hint}</div>

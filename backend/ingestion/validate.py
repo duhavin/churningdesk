@@ -19,8 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config, models
-from ..benefit_normalization import normalize_known_public_facts, normalize_public_benefits
+from .. import config, models, source_quality
+from ..benefit_normalization import is_benefit_noise, normalize_known_public_facts, normalize_public_benefits
 from ..product_identity import reward_currency_for_product
 from .extract import OfferExtraction
 
@@ -57,6 +57,7 @@ NON_OFFER_SOURCE_TERMS = (
 )
 
 HIGH_CONFIDENCE = 0.8
+OFFICIAL_AUTO_COMMIT_CONFIDENCE = 0.86
 GENERIC_REWARD_CURRENCIES = {"points", "miles", "cash", "cash back", "cashback"}
 FIRST_SIGHT_FIELD_CONFIDENCE = {
     "currency": 0.7,
@@ -92,6 +93,44 @@ TARGETED_TERMS = (
     "mail offer",
     "email offer",
 )
+OFFICIAL_AUTO_COMMIT_FIELDS = {
+    "annual_fee",
+    "current_offer_points",
+    "current_offer_cash",
+    "current_offer_min_spend",
+    "current_offer_window_months",
+    "first_year_credit_value",
+}
+FIELD_EVIDENCE_ALIASES = {
+    "annual_fee": ("annual_fee",),
+    "current_offer_points": ("current_offer_points", "bonus_amount"),
+    "current_offer_cash": ("current_offer_cash", "bonus_amount"),
+    "current_offer_min_spend": ("current_offer_min_spend", "spend_requirement"),
+    "current_offer_window_months": ("current_offer_window_months", "spend_window_months"),
+    "first_year_credit_value": ("first_year_credit_value",),
+    "peak_offer_points": ("peak_offer_points", "peak_bonus_amount", "current_offer_points", "bonus_amount"),
+    "peak_offer_min_spend": (
+        "peak_offer_min_spend",
+        "peak_spend_requirement",
+        "current_offer_min_spend",
+        "spend_requirement",
+    ),
+}
+FIELD_EVIDENCE_REQUIRED_FOR_COMMIT = set(FIELD_EVIDENCE_ALIASES)
+CURRENT_OFFER_FIELDS = {
+    "current_offer_points",
+    "current_offer_cash",
+    "current_offer_min_spend",
+    "current_offer_window_months",
+}
+SUPPLEMENTAL_WRITE_FIELDS = {
+    "earn_multipliers",
+    "best_category_uses",
+    "card_benefits",
+    "downgrade_paths",
+    "eligibility_tags",
+    "reports_to_personal_credit",
+}
 
 
 @dataclass(slots=True)
@@ -174,11 +213,17 @@ def _text_covers(needle: str, haystack: str) -> bool:
 
 
 def _is_raw_source_fragment(value: Any) -> bool:
+    if is_benefit_noise(value):
+        return True
+    if isinstance(value, dict):
+        name = str(value.get("name") or value.get("benefit") or value.get("title") or "").strip()
+        if name and len(name) <= 96:
+            return False
     low = str(value or "").lower()
     text = str(value or "")
-    if "[text]" in low and len(text) > 220:
+    if "[text]" in low:
         return True
-    if len(text) > 320 and not any(term in low for term in ("credit", "access", "lounge", "bonus", "insurance")):
+    if len(text) > 220:
         return True
     return any(
         token in low
@@ -199,6 +244,13 @@ def _is_raw_source_fragment(value: Any) -> bool:
             "payment plan",
             "doesn't include",
             "does not include",
+            "while we don't cover all available",
+            "we don't cover all available",
+            "editorial content is not influenced",
+            "not influenced by nor subject to review",
+            "subject to review by any credit card company",
+            "credit card company, bank or partner",
+            "our editorial team creates and maintains",
         )
     )
 
@@ -521,6 +573,57 @@ def _offer_evidence_text(ext: OfferExtraction, *field_names: str) -> str:
     return " ".join(pieces).lower()
 
 
+def _all_evidence_text(ext: OfferExtraction) -> str:
+    pieces = [
+        ext.source_url,
+        ext.product_url,
+        getattr(ext, "issuer", None),
+        getattr(ext, "card_name", None),
+        ext.eligibility_language,
+        ext.needs_review_reason,
+    ]
+    for snippets in (ext.evidence_snippets or {}).values():
+        if isinstance(snippets, list):
+            pieces.extend(str(item or "") for item in snippets)
+        elif snippets:
+            pieces.append(str(snippets))
+    return " ".join(str(part or "") for part in pieces)
+
+
+def _has_field_evidence(ext: OfferExtraction, field: str) -> bool:
+    evidence = ext.evidence_snippets or {}
+    for key in FIELD_EVIDENCE_ALIASES.get(field, (field,)):
+        value = evidence.get(key)
+        if isinstance(value, list) and any(str(item or "").strip() for item in value):
+            return True
+        if value and str(value).strip():
+            return True
+    return False
+
+
+def _trusted_official_auto_commit(
+    product: models.CardProduct,
+    ext: OfferExtraction,
+    source_url: str,
+    field: str,
+    confidence: float,
+) -> bool:
+    if field not in OFFICIAL_AUTO_COMMIT_FIELDS:
+        return False
+    if confidence < OFFICIAL_AUTO_COMMIT_CONFIDENCE:
+        return False
+    if field in CURRENT_OFFER_FIELDS and ext.offer_status != "public":
+        return False
+    if not _has_field_evidence(ext, field):
+        return False
+    return source_quality.is_verified_auto_adopt_source(
+        product.issuer,
+        product.product_name,
+        source_url or ext.source_url or ext.product_url,
+        _all_evidence_text(ext),
+    )
+
+
 def _looks_like_non_welcome_bonus(ext: OfferExtraction, fields: dict) -> bool:
     if not fields.get("current_offer_points"):
         return False
@@ -562,6 +665,17 @@ def _normalize_offer_payload(
             fields[source_field] = _normalize_url(fields[source_field])
 
     source = _normalize_url(source_url)
+    if source_quality.has_variant_conflict(
+        product.issuer,
+        product.product_name,
+        f"{source_url or ''} {ext.source_url or ''} {ext.product_url or ''} {_all_evidence_text(ext)}",
+    ):
+        fields = {
+            field: value
+            for field, value in fields.items()
+            if field not in (_OFFER_WRITE_FIELDS | SUPPLEMENTAL_WRITE_FIELDS)
+        }
+
     targeted = _looks_targeted(ext, fields)
     if targeted:
         if fields.get("current_offer_points") and not fields.get("targeted_peak_offer_points"):
@@ -599,6 +713,26 @@ def _normalize_offer_payload(
             if field not in _OFFER_WRITE_FIELDS
         }
 
+    current_points = fields.get("current_offer_points")
+    if (
+        current_points
+        and product.peak_offer_points
+        and current_points > product.peak_offer_points
+        and not fields.get("peak_offer_points")
+        and ext.offer_status == "public"
+        and source_quality.is_verified_auto_adopt_source(
+            product.issuer,
+            product.product_name,
+            source or ext.source_url or ext.product_url,
+            _all_evidence_text(ext),
+        )
+    ):
+        # A current public offer above an already-verified public peak is itself
+        # the new public high-water mark. Do not create first-sight peaks from a
+        # current offer when no prior public peak exists.
+        fields["peak_offer_points"] = int(current_points)
+        fields["peak_offer_source"] = source or ext.source_url or ext.product_url
+
     if fields.get("peak_offer_points") and not fields.get("peak_offer_min_spend"):
         spend = fields.get("current_offer_min_spend") or product.current_offer_min_spend
         if spend:
@@ -606,7 +740,7 @@ def _normalize_offer_payload(
     return fields
 
 
-def _decision(field: str, old, new, confidence: float) -> str:
+def _decision(field: str, old, new, confidence: float, *, trusted_auto_commit: bool = False) -> str:
     """Return 'commit', 'propose', or 'skip'."""
     if _empty(old):
         if confidence < FIRST_SIGHT_FIELD_CONFIDENCE.get(field, 0.65):
@@ -621,6 +755,8 @@ def _decision(field: str, old, new, confidence: float) -> str:
         if new > old:
             return "commit"
         return "propose"
+    if trusted_auto_commit:
+        return "commit"
     if field in OFFER_FIELDS and isinstance(old, (int, float)) and isinstance(new, (int, float)):
         delta = abs(new - old) / max(abs(old), 1)
         if delta > config.OFFER_DELTA_THRESHOLD:
@@ -669,12 +805,6 @@ def _extraction_fields(ext: OfferExtraction) -> dict:
     }
     if ext.earn_multipliers:
         fields["earn_multipliers"] = {m.category: m.multiplier for m in ext.earn_multipliers}
-    # A fresh public current offer also raises the public peak (peak is a max).
-    if ext.current_offer_points and (
-        ext.peak_offer_points is None or ext.current_offer_points > ext.peak_offer_points
-    ):
-        fields["peak_offer_points"] = max(ext.current_offer_points, ext.peak_offer_points or 0)
-        fields["peak_offer_source"] = fields.get("peak_offer_source") or ext.source_url or ext.product_url
     # Drop unknown (null) extracted values so we never overwrite with nothing.
     return {k: v for k, v in fields.items() if v is not None}
 
@@ -737,6 +867,7 @@ def apply_extraction(
     normalized_source = _normalize_url(source_url) or source_url
     new_fields = _normalize_offer_payload(product, ext, normalized_source, _extraction_fields(ext))
     known_facts = normalize_known_public_facts(product.issuer, product.product_name, normalized_source)
+    known_fact_fields = set(known_facts or {})
     if known_facts:
         new_fields.update({field: value for field, value in known_facts.items() if value not in (None, "", [], {})})
     if "card_benefits" in new_fields:
@@ -764,12 +895,32 @@ def apply_extraction(
         if review.action == "reject":
             rejected.append(field)
             continue
-        decision = _decision(field, old_value, new_value, confidence)
+        trusted_auto_commit = _trusted_official_auto_commit(
+            product,
+            ext,
+            normalized_source,
+            field,
+            confidence,
+        )
+        decision = _decision(
+            field,
+            old_value,
+            new_value,
+            confidence,
+            trusted_auto_commit=trusted_auto_commit,
+        )
         if review.action == "review" and decision == "commit":
             decision = "propose"
         if decision == "skip":
             _settle_pending_changes(db, product, field, old_value, normalized_source)
             continue
+        if (
+            decision == "commit"
+            and field in FIELD_EVIDENCE_REQUIRED_FOR_COMMIT
+            and field not in known_fact_fields
+            and not _has_field_evidence(ext, field)
+        ):
+            decision = "propose"
         if decision == "commit":
             setattr(product, field, new_value)
             _settle_pending_changes(db, product, field, new_value, normalized_source)
@@ -810,7 +961,13 @@ def apply_extraction(
 
     # Provenance: every touched product records where + when it was verified.
     if committed:
-        product.source_url = normalized_source
+        if source_quality.is_safe_product_source(
+            product.issuer,
+            product.product_name,
+            normalized_source,
+            _all_evidence_text(ext),
+        ):
+            product.source_url = normalized_source
         product.last_verified = _utcnow()
     if commit:
         db.commit()

@@ -1,6 +1,6 @@
 """FastAPI application entry point.
 
-Run from the churn_app/ directory:
+Run from the WEwards/ directory:
     uvicorn backend.main:app --reload --port 8000
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ from .routers import (
 # Create tables at import time so they exist under uvicorn AND test clients.
 init_db()
 
-app = FastAPI(title="Churn — Credit Card Churning Dashboard", version="1.0.0")
+app = FastAPI(title="WEwards — Credit Card Household Rewards Dashboard", version="1.0.0")
 
 # Dev: Vite runs on :5173 and proxies /api to :8000. CORS is permissive for
 # localhost only.

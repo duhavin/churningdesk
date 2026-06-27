@@ -69,9 +69,11 @@ Wrong data = wrong card path. Data quality is the linchpin of the whole engine.
 - **Quality-gating**: obvious parser regressions are rejected before review: generic
   co-brand currency downgrades, raw copied benefit/article fragments, and category maps that
   collapse existing earn/use coverage.
-- **Delta-gating**: first sight commits; large offer changes (> `OFFER_DELTA_THRESHOLD`) or
-  any eligibility-rule change → `ProposedChange` review queue. Peak is monotonic (raise
-  freely; any decrease → review).
+- **Delta-gating**: first sight commits. High-confidence official issuer product pages can
+  auto-adopt current public offer terms, annual fee, minimum spend, and spend window with
+  evidence. Broad, conflicting, ambiguous, or unsupported large offer changes (>
+  `OFFER_DELTA_THRESHOLD`) and any eligibility-rule change → `ProposedChange` review queue.
+  Peak is monotonic (raise freely; any decrease → review).
 - **Never fabricate.** Unknown/unsupported → `NEEDS DATA`. Do not infer offer amounts from
   model memory and present them as fact.
 - **Human verification** is the final check for offers/rules that drive the pipeline.

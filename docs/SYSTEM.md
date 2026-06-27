@@ -1,4 +1,4 @@
-# Churn System Architecture
+# WEwards System Architecture
 
 This document maps the application so agents can make changes without
 rediscovering the repo or crossing data boundaries.
@@ -8,7 +8,7 @@ rediscovering the repo or crossing data boundaries.
 - Backend: FastAPI, SQLAlchemy 2, SQLite.
 - Frontend: React, TypeScript, Vite, Tailwind.
 - LLM: Anthropic, used only by PUBLIC ingestion/extraction flows.
-- Storage: local SQLite at `DATABASE_URL`, default `sqlite:///data/churn.db`.
+- Storage: local SQLite at `DATABASE_URL`, default `sqlite:///data/wewards.db`.
 - Sensitive fields: Fernet encryption via `backend/crypto.py`.
 
 ## Backend Entry

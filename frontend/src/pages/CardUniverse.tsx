@@ -419,7 +419,7 @@ function ValuationRow({ v, onSaved, flash }: { v: any; onSaved: () => void; flas
   return (
     <tr>
       <td className="td text-slate-200">{v.currency}</td>
-      <td className="td font-mono text-slate-400">{v.cpp_scraped ?? "—"}</td>
+      <td className="td tabular-nums text-slate-400">{v.cpp_scraped ?? "—"}</td>
       <td className="td">
         <input
           className="input max-w-[90px]"
@@ -429,7 +429,7 @@ function ValuationRow({ v, onSaved, flash }: { v: any; onSaved: () => void; flas
           onChange={(e) => setOverride(e.target.value)}
         />
       </td>
-      <td className="td font-mono text-cyan-accent">{v.cpp_effective ?? "—"}</td>
+      <td className="td font-semibold tabular-nums text-cyan-accent">{v.cpp_effective ?? "—"}</td>
       <td className="td text-right">
         <button
           className="text-xs text-cyan-accent hover:underline"
@@ -478,7 +478,7 @@ function ValuationCard({ v, onSaved, flash }: { v: any; onSaved: () => void; fla
           <div className="text-[11px] text-slate-500">scraped {v.cpp_scraped ?? "-"}</div>
         </div>
         <div className="shrink-0 text-right">
-          <div className="font-mono text-cyan-accent">{v.cpp_effective ?? "-"}</div>
+          <div className="font-semibold tabular-nums text-cyan-accent">{v.cpp_effective ?? "-"}</div>
           <div className="text-[10px] text-slate-500">effective</div>
         </div>
       </div>
@@ -557,7 +557,7 @@ function SourceRow({ source, onSaved, flash }: { source: any; onSaved: () => voi
         onBlur={() => save()}
       />
       <span className="min-w-0 text-slate-300">{source.name}</span>
-      <span className="flex-1 truncate font-mono text-slate-500" title={source.url}>{source.url}</span>
+      <span className="flex-1 truncate text-slate-500" title={source.url}>{source.url}</span>
       <button
         className="text-left text-xs text-slate-500 hover:text-pink-accent sm:text-right"
         disabled={busy}

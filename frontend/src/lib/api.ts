@@ -108,6 +108,7 @@ export interface RefreshResult {
   scan?: ApiPayload;
   peaks_filled?: number;
   valuations_added?: number;
+  review_cleanup?: ApiPayload;
 }
 export interface RefreshRunResponse extends RefreshResult {
   status?: "started" | "already_running" | string;
@@ -188,6 +189,8 @@ export interface CatalogEntry {
   value_known: boolean;
   peak_is_targeted: boolean;
   is_exceptional: boolean;
+  decision_ready?: boolean;
+  data_quality_issues?: string[];
   status: string;
   rank: number | null;
 }
@@ -197,6 +200,13 @@ export interface CardReference {
   issuer: string;
   product_name: string;
   display_name: string;
+  aliases?: string[];
+  search_terms?: string[];
+  currency?: string | null;
+  product_family?: string | null;
+  ownership?: string | null;
+  account_type?: string | null;
+  reports_to_personal_credit?: boolean | null;
   issuer_url: string | null;
   offer_url: string | null;
   active: boolean;
@@ -458,6 +468,8 @@ export interface PipelineCard {
   current_offer_window_months: number | null;
   targeted_beats_public: boolean;
   is_exceptional: boolean;
+  decision_ready?: boolean;
+  data_quality_issues?: string[];
   relationship?: string;
   reason: string;
 }
@@ -530,6 +542,10 @@ export interface HouseholdReferral {
   household_gain: number;
   pipeline_rank?: number | null;
   is_exceptional?: boolean;
+  decision_ready?: boolean;
+  data_quality_issues?: string[];
+  route?: string;
+  referral_match?: string | null;
   reason: string;
 }
 export interface HouseholdMove {
@@ -554,8 +570,11 @@ export interface HouseholdMove {
   is_exceptional: boolean;
   household_value: number;
   pipeline_rank?: number | null;
+  decision_ready?: boolean;
+  data_quality_issues?: string[];
   route: string;
   referral_from: string | null;
+  referral_match?: string | null;
   referral_value: number | null;
   reason: string;
 }

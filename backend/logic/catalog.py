@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, source_quality
 from ..benefit_normalization import normalize_public_benefits
 from ..crypto import MissingKeyError
 from ..product_identity import canonical_product_key, derive_product_family, product_display_name, product_variant_key
@@ -20,6 +20,16 @@ from . import scoring
 
 if TYPE_CHECKING:
     from .decision_context import DecisionContext
+
+CRITICAL_DECISION_FIELDS = {
+    "annual_fee",
+    "currency",
+    "current_offer_points",
+    "current_offer_cash",
+    "current_offer_min_spend",
+    "current_offer_window_months",
+}
+DECISION_FRESH_DAYS = 30
 
 
 def valuation_map(db: Session) -> dict[str, float]:
@@ -115,6 +125,67 @@ def _verified_status(p: models.CardProduct) -> str:
     return "verified"
 
 
+def _pending_fields(db: Session) -> dict[int, set[str]]:
+    rows = db.execute(
+        select(models.ProposedChange.target_id, models.ProposedChange.field).where(
+            models.ProposedChange.target_table == "card_product",
+            models.ProposedChange.status == "pending",
+        )
+    ).all()
+    out: dict[int, set[str]] = {}
+    for target_id, field in rows:
+        out.setdefault(target_id, set()).add(field)
+    return out
+
+
+def _decision_quality_issues(p: models.CardProduct, pending_fields: set[str] | None = None) -> list[str]:
+    issues: list[str] = []
+    pending_fields = pending_fields or set()
+    pending_critical = sorted(CRITICAL_DECISION_FIELDS & pending_fields)
+    if pending_critical:
+        issues.append("pending_verified_update")
+    source_issue = source_quality.source_quality_issue(p.issuer, p.product_name, p.source_url)
+    if source_issue:
+        issues.append(source_issue)
+    if not p.last_verified:
+        issues.append("never_verified")
+    else:
+        age_days = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - p.last_verified).days
+        if age_days > DECISION_FRESH_DAYS:
+            issues.append("stale_verified_data")
+    if not (p.current_offer_effective or p.current_offer_cash):
+        issues.append("missing_current_offer")
+    if not p.peak_offer_points:
+        issues.append("missing_public_peak")
+    if p.annual_fee is None:
+        issues.append("missing_annual_fee")
+    if not p.currency:
+        issues.append("missing_currency")
+    if p.current_offer_effective:
+        if p.current_offer_min_spend is None:
+            issues.append("missing_min_spend")
+        if p.current_offer_window_months is None:
+            issues.append("missing_spend_window")
+    return list(dict.fromkeys(issues))
+
+
+def _blocks_apply_decision(issues: list[str]) -> bool:
+    blocking = {
+        "pending_verified_update",
+        "source_identity_conflict",
+        "broad_source_not_product_truth",
+        "source_not_product_specific",
+        "never_verified",
+        "stale_verified_data",
+        "missing_current_offer",
+        "missing_annual_fee",
+        "missing_currency",
+        "missing_min_spend",
+        "missing_spend_window",
+    }
+    return any(issue in blocking for issue in issues)
+
+
 def _display_benefits(p: models.CardProduct) -> list | None:
     return normalize_public_benefits(
         p.issuer,
@@ -122,7 +193,7 @@ def _display_benefits(p: models.CardProduct) -> list | None:
         p.source_url,
         p.card_benefits,
         allow_reference=_verified_status(p) == "verified",
-    ) or p.card_benefits
+    )
 
 
 def product_to_dict(p: models.CardProduct) -> dict:
@@ -300,14 +371,22 @@ def has_known_bonus(p: models.CardProduct) -> bool:
     )
 
 
+def _closed_to_new_applicants(p: models.CardProduct) -> bool:
+    tags = {str(tag).strip().lower() for tag in (p.eligibility_tags or [])}
+    return "closed_to_new_applicants" in tags or "closed to new applicants" in tags
+
+
 def _show_in_plan(p: models.CardProduct) -> bool:
     """Hide refreshed cards that have no welcome bonus (now or ever) to cut bloat.
 
-    Unverified cards (never refreshed) are kept so a future refresh can fill them
-    in; a card that has been verified and still shows no bonus is dropped (it
-    re-appears automatically if a later refresh finds an offer).
+    Unverified and reference-seeded cards are kept so refresh can fill missing
+    offer facts. Closed-to-new cards are hidden from new-application planning.
     """
+    if _closed_to_new_applicants(p):
+        return False
     if has_known_bonus(p):
+        return True
+    if p.added_by == "reference_seed":
         return True
     return p.last_verified is None
 
@@ -349,6 +428,7 @@ def scored_catalog(
     targeted_map = _targeted_map(held, manual)
     manual_map = {_key(m.issuer, m.product_name): m for m in manual}
     products = [p for p in (context.products if context else effective_catalog(db)) if _show_in_plan(p)]
+    pending_by_id = _pending_fields(db)
 
     entries: list[dict] = []
     for p in products:
@@ -360,7 +440,10 @@ def scored_catalog(
         targeted = targeted_map.get(_key(p.issuer, p.product_name))
         manual_offer = manual_map.get(_key(p.issuer, p.product_name))
         s = scoring.compute_score(p, vmap, e, my_targeted_offer_points=targeted)
+        quality_issues = _decision_quality_issues(p, pending_by_id.get(p.id or 0, set()))
+        quality_blocks = _blocks_apply_decision(quality_issues)
         entry = product_to_dict(p)
+        status = scoring.NEEDS_DATA if quality_blocks and s.status != scoring.SKIP else s.status
         entry.update(
             {
                 "eligibility": e,
@@ -370,11 +453,13 @@ def scored_catalog(
                 "targeted_beats_public": s.targeted_beats_public,
                 "my_targeted_offer_points": targeted,
                 "manual_targeted_offer": _manual_offer_to_dict(manual_offer),
-                "status": s.status,
-                "needs_data": s.needs_data,
+                "status": status,
+                "needs_data": s.needs_data or quality_blocks,
                 "value_known": s.value_known,
                 "peak_is_targeted": s.peak_is_targeted,
                 "is_exceptional": s.is_exceptional,
+                "data_quality_issues": quality_issues,
+                "decision_ready": not quality_blocks,
             }
         )
         entries.append(entry)
