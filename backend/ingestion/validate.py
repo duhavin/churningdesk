@@ -659,6 +659,10 @@ def _normalize_offer_payload(
     fields = dict(fields)
     if "currency" in fields:
         fields["currency"] = _normalize_currency(product, fields["currency"])
+    elif isinstance(product.currency, str) and product.currency.strip().lower() in GENERIC_REWARD_CURRENCIES:
+        normalized_currency = reward_currency_for_product(product.issuer, product.product_name, product.currency)
+        if normalized_currency and normalized_currency.strip().lower() != product.currency.strip().lower():
+            fields["currency"] = normalized_currency
 
     for source_field in ("peak_offer_source", "targeted_peak_offer_source"):
         if source_field in fields:
@@ -748,6 +752,14 @@ def _decision(field: str, old, new, confidence: float, *, trusted_auto_commit: b
         return "commit"  # first sight — nothing to overwrite
     if old == new:
         return "skip"
+    if (
+        field == "currency"
+        and isinstance(old, str)
+        and isinstance(new, str)
+        and old.strip().lower() in GENERIC_REWARD_CURRENCIES
+        and new.strip().lower() not in GENERIC_REWARD_CURRENCIES
+    ):
+        return "commit"
     if field in ELIG_FIELDS:
         return "propose"  # eligibility-rule change always reviewed
     # Peak is durable history: raise freely, but review any decrease.

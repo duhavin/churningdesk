@@ -633,7 +633,7 @@ def _apply_scan_row(
     row = _drop_unsupported_broad_fields(row, product)
     row = _drop_unsafe_supplemental(row, product)
     if not _can_apply(row):
-        return {
+        result = {
             "committed": [],
             "proposed": [],
             "note": row.needs_review_reason
@@ -642,11 +642,14 @@ def _apply_scan_row(
             "scan_confidence": row.confidence,
             "offer_status": row.offer_status,
         }
+        _mark_safe_source_verified(product, row, result)
+        return result
 
     ext = _row_to_extraction(row)
     applied = validate.apply_extraction(
         db, product, ext, row.source_url or row.product_url or "", commit=False
     )
+    _mark_safe_source_verified(product, row, applied)
     row.changed_fields = list(dict.fromkeys(applied.get("committed", []) + applied.get("proposed", [])))
     applied.update(
         {
@@ -656,6 +659,31 @@ def _apply_scan_row(
         }
     )
     return applied
+
+
+def _mark_safe_source_verified(
+    product: models.CardProduct,
+    row: extract.OfferScanRow,
+    result: dict,
+) -> None:
+    source_url = source_quality.normalize_url(row.source_url or row.product_url or product.source_url)
+    if not source_url or not row.found or row.confidence < MIN_CONFIDENCE:
+        return
+    if not source_quality.is_safe_product_source(
+        product.issuer,
+        product.product_name,
+        source_url,
+        _row_evidence_text(row),
+    ):
+        return
+    if product.source_url and not _same_url(product.source_url, source_url):
+        return
+    if not product.source_url:
+        product.source_url = source_url
+    product.last_verified = _utcnow()
+    if not result.get("committed") and not result.get("proposed"):
+        result["note"] = result.get("note") or "source_verified_no_change"
+        result["verified_source"] = True
 
 
 def _row_evidence_text(row: extract.OfferScanRow) -> str:
@@ -1112,7 +1140,16 @@ def run_refresh(
         products = [p for p in products_without_pending if not _has_peak_offer(p)]
     elif incomplete_only:
         products = [p for p in products_without_pending if needs_backfill(p)]
-    elif force or only_stale is False:
+    elif force:
+        if only_stale is False:
+            products = products_without_pending
+        else:
+            products = [
+                p
+                for p in products_without_pending
+                if _is_stale(p, stale_days) or (include_incomplete and needs_backfill(p))
+            ]
+    elif only_stale is False:
         products = products_without_pending
     else:
         products = [
@@ -1517,7 +1554,7 @@ def run_refresh(
             if supplemental_gap and not force and not _supplemental_search_cooldown_open(product, now):
                 supplemental_search_cooldown_skipped += 1
                 continue
-            if not supplemental_gap and not _web_search_cooldown_open(product, now):
+            if not supplemental_gap and not force and not _web_search_cooldown_open(product, now):
                 web_search_cooldown_skipped += 1
                 continue
             candidates.append(product)

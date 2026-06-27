@@ -487,6 +487,7 @@ export default function App() {
       const committed = r.results.reduce((a: number, x: any) => a + (x.result.committed?.length || 0), 0);
       const proposed = r.results.reduce((a: number, x: any) => a + (x.result.proposed?.length || 0), 0);
       const notices = r.warnings?.length || 0;
+      const errorCount = r.errors?.length || 0;
       const deferred = num(r.scan?.web_search_deferred) || r.products_deferred_by_limit || 0;
       const needsData = num(r.scan?.cards_needs_data);
       const cardsResolved = num(r.scan?.cards_resolved);
@@ -510,8 +511,9 @@ export default function App() {
       if (deferred) parts.push(`${deferred} deferred`);
       if (cooldownSkipped) parts.push(`${cooldownSkipped} cooldown skip(s)`);
       if (notices) parts.push(`${notices} notice${notices === 1 ? "" : "s"}`);
+      if (errorCount) parts.push(`${errorCount} error${errorCount === 1 ? "" : "s"}`);
       flash(
-        hasUnexpectedRefreshWarning(r.warnings) ? "warn" : "info",
+        errorCount || hasUnexpectedRefreshWarning(r.warnings) ? "warn" : "info",
         `${parts.join(", ")}.`,
       );
       setBump((b) => b + 1);

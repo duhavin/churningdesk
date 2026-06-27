@@ -164,6 +164,38 @@ class IngestionGuardTests(unittest.TestCase):
         self.assertEqual(product.currency, "Marriott Bonvoy")
         self.assertEqual([], db.scalars(select(models.ProposedChange)).all())
 
+    def test_known_citi_generic_currency_is_corrected_on_refresh(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Citi",
+            product_name="Citi Custom Cash Card",
+            currency="points",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.95,
+            current_offer_points=20000,
+            current_offer_min_spend=750,
+            current_offer_window_months=3,
+            offer_status="public",
+            source_url="https://www.citi.com/credit-cards/citi-custom-cash-credit-card",
+            evidence_snippets={
+                "bonus_amount": ["Earn 20,000 points."],
+                "spend_requirement": ["after spending $750"],
+                "spend_window_months": ["in the first 3 months"],
+            },
+        )
+
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+
+        self.assertIn("currency", result["committed"])
+        self.assertEqual(product.currency, "Citi ThankYou Points")
+        self.assertEqual(product.current_offer_points, 20000)
+
     def test_category_map_regression_is_rejected_before_commit(self):
         db = self._session()
         product = models.CardProduct(
@@ -325,6 +357,70 @@ class IngestionGuardTests(unittest.TestCase):
 
         self.assertEqual(hits, [valid])
         self.assertEqual(evidence["card_benefits"], [valid])
+
+    def test_offer_batch_json_fallback_parser_validates_rows(self):
+        rows = extract._parse_offer_scan_batch_json(
+            """
+            ```json
+            {
+              "rows": [
+                {
+                  "issuer": "Test Bank",
+                  "card_name": "Useful Rewards Card",
+                  "bonus_amount": 75000,
+                  "bonus_unit": "points",
+                  "offer_status": "public",
+                  "confidence": 0.91,
+                  "evidence_snippets": {"bonus_amount": "Earn 75,000 points."},
+                  "changed_fields": null,
+                  "found": true
+                }
+              ]
+            }
+            ```
+            """
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].issuer, "Test Bank")
+        self.assertEqual(rows[0].bonus_amount, 75000)
+        self.assertEqual(rows[0].offer_status, "public")
+        self.assertEqual(rows[0].evidence_snippets["bonus_amount"], ["Earn 75,000 points."])
+        self.assertEqual(rows[0].changed_fields, [])
+
+    def test_safe_source_check_marks_verified_without_field_changes(self):
+        db = self._session()
+        source_url = "https://www.capitalone.com/credit-cards/venture-x"
+        product = models.CardProduct(
+            issuer="Capital One",
+            product_name="Capital One Venture X Rewards Credit Card",
+            source_url=source_url,
+            current_offer_points=75000,
+            peak_offer_points=100000,
+            currency="Capital One Miles",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        row = extract.OfferScanRow(
+            issuer=product.issuer,
+            card_name=product.product_name,
+            source_url=source_url,
+            product_url=source_url,
+            offer_status="unknown",
+            confidence=0.92,
+            found=True,
+            evidence_snippets={"source": ["Capital One Venture X Rewards Credit Card source check."]},
+        )
+
+        result = schedule._apply_scan_row(db, product, row)
+
+        self.assertTrue(result["verified_source"])
+        self.assertIsNotNone(product.last_verified)
+        self.assertEqual(product.source_url, source_url)
+        self.assertFalse(result["committed"])
+        self.assertFalse(result["proposed"])
 
     def test_raw_benefit_fragments_do_not_fall_back_to_catalog_write(self):
         db = self._session()

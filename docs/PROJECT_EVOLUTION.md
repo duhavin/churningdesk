@@ -4,6 +4,43 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-06-27 00:14 -07:00 - Refresh Verification Loop Fix
+
+**Status:** completed. **Scope:** Run menu deep refresh behavior, refresh scheduler cooldown semantics, LLM extraction fallback, safe-source verification, product-aware currency correction, live public catalog verification.
+
+**What Changed**
+
+- Made Deep Refresh force-retry stale or incomplete selected cards instead of silently respecting the web-search cooldown.
+- Kept forced refresh bounded to stale/incomplete cards unless callers explicitly request all products.
+- Added an Anthropic schema-limit fallback for offer batch extraction: if strict structured parsing is rejected, the extractor requests plain JSON and validates/coerces it locally.
+- Made successful safe-source checks update `last_verified` even when no catalog fields changed, so already-filled cards can clear `never_verified`.
+- Made generic-to-canonical currency corrections auto-commit when product identity is deterministic.
+- Added Citi Custom Cash to product-aware currency normalization as `Citi ThankYou Points`.
+- Updated refresh UI messaging so returned errors are surfaced in the toast summary.
+
+**Verification**
+
+- Python compile passed for changed backend modules.
+- Focused backend ingestion/research/catalog/card-reference tests passed.
+- Full backend test discovery passed: 106 tests. Existing SQLAlchemy ResourceWarnings for unclosed in-memory SQLite connections still appear.
+- Frontend TypeScript typecheck passed.
+- Frontend production build passed. Existing Vite large-bundle warning remains.
+- Restarted WEwards on backend `8000` and frontend `5176`.
+- Live forced refresh for Venture X and Citi Custom Cash returned zero cooldown skips after the force fix.
+- Live public catalog health confirmed Venture X and Citi Custom Cash now report `healthy`, reducing held needs-data count from 4 to 3.
+- CodeGraph sync ran after the patch and indexed 7 changed files.
+
+**Open Risks**
+
+- Amex Gold still lacks a fixed public offer/peak because the official page presents an as-high-as/check-your-offer flow rather than a normal fixed public welcome offer.
+- Amex Business Gold still lacks a public peak.
+- Freedom Flex has a pending review for category fields and still lacks public peak history.
+- Some source adapters can still produce noisy benefit candidates; parser/normalization guardrails need continued expansion from real source failures.
+
+**Rollback Notes**
+
+- Revert the Run menu payload change, scheduler force/cooldown changes, extraction JSON fallback, safe-source verification update, currency normalization update, and ingestion guard tests to restore the prior behavior. After rollback, expect forced Deep Refresh to again be able to cooldown-skip unresolved cards and expect generic `points` on Citi Custom Cash to block valuation health.
+
 ## 2026-06-26 23:46 -07:00 - Benefit Fragment Ingestion Guard
 
 **Status:** completed. **Scope:** public benefit extraction, benefit normalization, apply-time catalog writes, regression tests, CodeGraph sync.

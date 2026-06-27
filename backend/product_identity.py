@@ -258,7 +258,7 @@ def reward_currency_for_product(
         "business plus",
     ):
         return "Amex Membership Rewards"
-    if issuer_key == "citi" and _has_any(name, "strata", "premier", "prestige"):
+    if issuer_key == "citi" and _has_any(name, "strata", "premier", "prestige", "custom cash"):
         return "Citi ThankYou Points"
     if issuer_key == "bilt":
         return "Bilt Rewards"

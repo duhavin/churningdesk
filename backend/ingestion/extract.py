@@ -37,6 +37,63 @@ def _provider_unavailable(exc: anthropic.APIError) -> IngestionUnavailable:
     return IngestionUnavailable(f"Anthropic API request failed: {detail}")
 
 
+def _is_schema_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "compiled grammar is too large" in text or "simplify your tool schemas" in text
+
+
+def _message_text(message: Any) -> str:
+    pieces: list[str] = []
+    for block in getattr(message, "content", []) or []:
+        if isinstance(block, dict):
+            if block.get("type") == "text" and block.get("text"):
+                pieces.append(str(block.get("text")))
+            continue
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None):
+            pieces.append(str(block.text))
+    return "\n".join(pieces).strip()
+
+
+def _parse_json_object(text: str) -> Any:
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        return json.loads(raw[start : end + 1])
+
+
+def _coerce_offer_scan_batch_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        return payload
+    for row in payload["rows"]:
+        if not isinstance(row, dict):
+            continue
+        if row.get("changed_fields") is None:
+            row["changed_fields"] = []
+        evidence = row.get("evidence_snippets")
+        if isinstance(evidence, dict):
+            row["evidence_snippets"] = {
+                str(key): value
+                if isinstance(value, list)
+                else ([] if value is None else [str(value)])
+                for key, value in evidence.items()
+            }
+    return payload
+
+
+def _parse_offer_scan_batch_json(text: str) -> list[OfferScanRow]:
+    payload = _coerce_offer_scan_batch_payload(_parse_json_object(text))
+    result = OfferScanBatchResult.model_validate(payload)
+    return [normalize_offer_scan_row(row) for row in result.rows]
+
+
 # ---------------------------------------------------------------------------
 #  Discovery: enumerate the reputable, churning-relevant card universe (§4.2)
 # ---------------------------------------------------------------------------
@@ -724,6 +781,26 @@ def extract_offers_batch(cards: list[OfferSnippetInput]) -> list[OfferScanRow]:
             output_format=OfferScanBatchResult,
         )
     except anthropic.APIError as exc:
+        if _is_schema_limit_error(exc):
+            fallback_prompt = (
+                f"{prompt}\n\n"
+                "The strict schema parser is unavailable for this request. Return ONLY valid JSON with this shape:\n"
+                "{\"rows\":[{\"issuer\":\"...\",\"card_name\":\"...\",\"found\":true,\"confidence\":0.0}]}\n"
+                "Include every relevant field from the requested row shape when supported by snippets. "
+                "Use null or omit unsupported fields. No markdown, no prose."
+            )
+            try:
+                fallback = client.messages.create(
+                    model=config.ANTHROPIC_MODEL,
+                    max_tokens=min(4000, 600 + len(cards) * 450),
+                    messages=[{"role": "user", "content": fallback_prompt}],
+                )
+            except anthropic.APIError as fallback_exc:
+                raise _provider_unavailable(fallback_exc) from fallback_exc
+            try:
+                return _parse_offer_scan_batch_json(_message_text(fallback))
+            except Exception as parse_exc:
+                raise IngestionUnavailable(f"Anthropic JSON fallback parse failed: {parse_exc}") from parse_exc
         raise _provider_unavailable(exc) from exc
     result = resp.parsed_output
     return [normalize_offer_scan_row(row) for row in result.rows] if result else []

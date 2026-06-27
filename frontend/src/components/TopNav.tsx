@@ -205,11 +205,11 @@ function TopControls({
             />
             <RunItem
               label="Deep refresh"
-              hint="Renders unresolved known pages, then capped web fallback"
+              hint="Force-retry incomplete cards, render known pages, then capped web fallback"
               disabled={!llmOk || !webOk || running}
               onClick={() => {
                 setRunOpen(false);
-                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_rendered_fallback: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: true });
+                onRefresh({ limit: null, only_stale: true, include_incomplete: true, force: true, use_rendered_fallback: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: true });
               }}
             />
             <RunItem
