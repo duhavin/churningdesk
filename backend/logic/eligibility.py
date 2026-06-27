@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..product_identity import product_variant_key
+from ..product_identity import product_display_name, product_variant_key
 
 MONTHS_524 = 24
 SAPPHIRE_MONTHS = 48
@@ -184,8 +184,11 @@ def eligibility(
         ]
         if earned:
             permanent = True
+            held_name = product_display_name(earned[0].issuer, earned[0].product_name) or earned[0].product_name
             reasons.append(
-                "Amex once-per-lifetime: welcome bonus already earned on this product."
+                "Amex once-per-lifetime: this profile has "
+                f"{held_name} listed with a welcome bonus already earned. "
+                "If that held-card row is wrong, correct the profile first."
             )
 
         # Velocity: 2 credit cards / 90 days

@@ -61,6 +61,12 @@ function qualityIssueLabel(issue: string) {
   return labels[issue] ?? issue.replace(/_/g, " ");
 }
 
+function decisionDataMessage(card: CatalogEntry) {
+  const labels = (card.data_quality_issues ?? []).slice(0, 4).map(qualityIssueLabel);
+  const suffix = labels.length ? `: ${labels.join(", ")}.` : ".";
+  return `Incomplete public decision data${suffix} Review or fill the listed fields before ranking.`;
+}
+
 function useSummary(r: CatalogEntry) {
   return compactEntries(r.earn_multipliers) || compactEntries(r.best_category_uses);
 }
@@ -777,10 +783,7 @@ function ExpandedDetails({
           )}
           {card.needs_data && (
             <div className="text-amber-200">
-              Needs verified data before ranking
-              {card.data_quality_issues?.length
-                ? `: ${card.data_quality_issues.slice(0, 3).map(qualityIssueLabel).join(", ")}.`
-                : "."}
+              {decisionDataMessage(card)}
             </div>
           )}
           {card.eligibility_tags?.length ? (

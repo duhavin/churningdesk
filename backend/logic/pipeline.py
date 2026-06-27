@@ -280,7 +280,7 @@ def _needs_review_reason(e: dict) -> str:
             "missing_spend_window": "missing spend window",
         }
         detail = ", ".join(labels.get(issue, issue.replace("_", " ")) for issue in issues[:3])
-        return f"Excluded from apply queue: {detail}. Refresh/verify before ranking."
+        return f"Excluded from apply queue: {detail}. Review or fill these public fields before ranking."
     if e["status"] == scoring.LOW_PRIORITY:
         return (
             "Excluded from apply queue: offer value is below the current value floor. "
