@@ -16,14 +16,13 @@
 
 ## Project Mode And Git Workflow
 
-Project mode: `personal-standard`.
+Project mode: `personal-autopush`.
 
 After Davin approves implementation work in this repo, run the relevant
-verification and sanitize/security preflight. Commit, push, tag, remote rename,
-deployment, dependency installs, and global config changes still require
-explicit approval.
+verification and sanitize/security preflight, then commit and push the approved
+changes to `origin/main` without asking again.
 
-Do not commit or push when:
+Do not auto-commit or push when:
 
 - secrets, `.env` values, private data, local databases, logs, browser
   profiles, generated media, virtual environments, dependency folders, or
@@ -31,10 +30,13 @@ Do not commit or push when:
 - critical verification fails,
 - scope is unclear,
 - the change touches `<separate-wewards-control-repo>`,
-- Davin has not explicitly approved the Git operation.
+- Davin explicitly says not to commit/push.
 
 Tags are not required for every WEwards commit unless Davin asks for a
 version/checkpoint/release tag or this project's docs later require one.
+
+Remote rename, GitHub settings changes, dependency installs, deployment, and
+global config changes are outside autopush and still require explicit approval.
 
 ## What This Is
 

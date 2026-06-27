@@ -30,18 +30,19 @@ requests, read in this order:
 
 ## Project Mode And Git Workflow
 
-Project mode: `personal-standard`.
+Project mode: `personal-autopush`.
 
 After Davin approves implementation work in this repo, run the relevant
-verification and sanitize/security preflight. Commit, push, tag, remote rename,
-deployment, dependency installs, and global config changes still require
-explicit approval.
+verification and sanitize/security preflight, then commit and push the approved
+changes to `origin/main` without asking again.
 
-Do not commit or push if the staged set would include secrets, `.env` values,
-private household data, databases, logs, browser profiles, generated media,
-virtual environments, dependency folders, unrelated user work, unclear-scope
-changes, or a Git operation Davin has not explicitly approved. Stop and report
-instead.
+Do not auto-commit or push if the staged set would include secrets, `.env`
+values, private household data, databases, logs, browser profiles, generated
+media, virtual environments, dependency folders, unrelated user work, or
+unclear-scope changes. Stop and report instead.
+
+Remote rename, GitHub settings changes, dependency installs, deployment, and
+global config changes are outside autopush and still require explicit approval.
 
 ## Non-Negotiable Principles
 

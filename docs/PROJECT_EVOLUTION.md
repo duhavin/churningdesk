@@ -14,7 +14,7 @@ Keep entries concise and focused on code behavior, data model changes, verificat
 - Renamed visible frontend/backend/runtime labels, package metadata, environment-example keys, docs, and the restart helper from the old app name to `WEwards`.
 - Renamed the restart helper to `scripts/restart-wewards.ps1` and updated its runtime environment variables to `WEWARDS_*`.
 - Added `docs/CURRENT_STATE.md` so future workspace chats can load the project as a normal baselined workspace project.
-- Restored the explicit `personal-autopush` project mode in `docs/CURRENT_STATE.md`, `AGENTS.md`, and `CLAUDE.md` so approved WEwards work is verified, sanitized, committed, and pushed without another approval prompt.
+- Restored Davin's explicit `personal-autopush` policy in `docs/CURRENT_STATE.md`, `AGENTS.md`, and `CLAUDE.md`: approved WEwards implementation work should be verified, sanitized, committed, and pushed without a second approval prompt.
 - Migrated ignored local database filenames from the old app-name file to `data/wewards.db` without inspecting or printing database contents.
 
 **Verification**
@@ -34,7 +34,7 @@ Keep entries concise and focused on code behavior, data model changes, verificat
 **Open Risks**
 
 - The Git remote still points at the old repository name; changing it is a separate Git/GitHub decision.
-- This commit combines prior uncommitted reliability/UI work with the rename/autopush restoration because those changes were already present in the working tree before the Git-policy restoration.
+- Commit `1f9f808` combines prior uncommitted reliability/UI work with the rename/autopush restoration because those changes were already present in the working tree before the Git-policy restoration.
 - Older historical workspace ledger entries still mention old project names as history; current project docs and workspace indexes now point at `WEwards`.
 - The app was not restarted in this pass.
 

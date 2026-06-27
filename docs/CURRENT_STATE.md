@@ -1,21 +1,22 @@
 # WEwards Current State
 
-Last updated: 2026-06-26 22:40 -07:00
+Last updated: 2026-06-26 22:43 -07:00
 
 ## Project Mode
 
-Primary mode: `personal-standard`
+Primary mode: `personal-autopush`
 
 Mode notes:
 
 - WEwards is Davin's personal project repo.
-- Commits, pushes, remote changes, deployment, dependency installs, and global
-  config changes require explicit approval.
-- Run the relevant verification and sanitize/security preflight before any
-  approved Git operation.
-- Do not commit if the working tree includes secrets, private data, databases,
-  logs, browser profiles, generated media, dependency folders, unrelated user
-  work, unresolved test failures, or unclear scope.
+- After Davin approves implementation work in this repo, run the relevant
+  verification and sanitize/security preflight, then commit and push the
+  approved changes to `origin/main` without asking again.
+- Do not auto-commit if the working tree includes secrets, private data,
+  databases, logs, browser profiles, generated media, dependency folders,
+  unrelated user work, unresolved test failures, or unclear scope.
+- Remote changes, deployment, dependency installs, and global config changes
+  still require explicit approval.
 
 ## Project Identity
 
@@ -191,12 +192,15 @@ Remote:
 
 Default branch: `main`
 
-Git rule:
+Autopush rule:
 
-- Do not commit, push, tag, rename the remote, or change GitHub settings unless
-  Davin explicitly asks.
-- If a future approved Git preflight finds sensitive files, unrelated user work,
-  failing critical checks, or unclear scope, stop and report before committing.
+- For approved WEwards implementation work, run verification and
+  sanitize/security preflight, then commit and push to `origin/main`
+  automatically.
+- If the preflight finds sensitive files, unrelated user work, failing critical
+  checks, or unclear scope, stop and report before committing.
+- Remote rename, GitHub settings changes, dependency installs, deployment, and
+  global config changes are outside autopush and still need explicit approval.
 
 ## Handoff Notes
 
