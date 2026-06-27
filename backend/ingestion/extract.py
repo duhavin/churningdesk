@@ -66,7 +66,13 @@ def _parse_json_object(text: str) -> Any:
         end = raw.rfind("}")
         if start < 0 or end <= start:
             raise
-        return json.loads(raw[start : end + 1])
+        extracted = raw[start : end + 1]
+        try:
+            return json.loads(extracted)
+        except json.JSONDecodeError:
+            # LLMs sometimes emit trailing commas before } or ] — strip them.
+            cleaned = re.sub(r",\s*([\]}])", r"\1", extracted)
+            return json.loads(cleaned)
 
 
 def _coerce_offer_scan_batch_payload(payload: Any) -> Any:

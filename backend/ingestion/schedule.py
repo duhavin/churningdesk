@@ -30,7 +30,7 @@ from . import extract, fetch, rendered_fetch, research_resolver, static_parse, v
 STALE_AFTER_DAYS = 3
 MIN_CONFIDENCE = 0.5
 DETERMINISTIC_CONFIDENCE = 0.78
-LLM_BATCH_SIZE = 8
+LLM_BATCH_SIZE = 4
 MAX_SNIPPETS_PER_CARD = 8
 # Per-snippet char cap for the compact LLM input (offers live in 1-3 short lines).
 SNIPPET_LLM_CHARS = 500
@@ -618,7 +618,7 @@ def _apply_scan_row(
     product: models.CardProduct,
     row: extract.OfferScanRow,
 ) -> dict:
-    if _has_variant_conflict(product, f"{row.source_url or ''} {row.product_url or ''}"):
+    if row.found and _has_variant_conflict(product, f"{row.source_url or ''} {row.product_url or ''}"):
         return {
             "committed": [],
             "proposed": [],
