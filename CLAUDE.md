@@ -22,11 +22,12 @@ requests, read in this order:
 
 1. `AGENTS.md` - hard rules, workspace boundary, architecture map.
 2. `docs/PROJECT_PRIMER.md` - one-doc project context.
-3. `docs/CURRENT_STATE.md` - active project mode, paths, run commands, and Git policy.
-4. `docs/PROJECT_EVOLUTION.md` - living audit/change/revert ledger.
-5. `docs/NEXT_TASKS.md` - current priorities and deferred work.
-6. Relevant docs in `docs/context/`.
-7. `docs/SYSTEM.md`, `docs/USAGE.md`, and `docs/UX.md` as needed.
+3. `docs/PROJECT_INTENT_CARD.md` - compact north-star, non-drift, and resolution guardrail.
+4. `docs/CURRENT_STATE.md` - active project mode, paths, run commands, and Git policy.
+5. `docs/PROJECT_EVOLUTION.md` - living audit/change/revert ledger.
+6. `docs/NEXT_TASKS.md` - current priorities and deferred work.
+7. Relevant docs in `docs/context/`.
+8. `docs/SYSTEM.md`, `docs/USAGE.md`, and `docs/UX.md` as needed.
 
 ## Project Mode And Git Workflow
 
@@ -79,8 +80,10 @@ global config changes are outside autopush and still require explicit approval.
 
 Before coding:
 
-- Restate the relevant guideline(s) from this file and
-  `docs/context/DEFINITION_OF_DONE.md`.
+- Restate the relevant guideline(s) from this file,
+  `docs/PROJECT_INTENT_CARD.md`, and `docs/context/DEFINITION_OF_DONE.md`.
+- State the project intent, current problem frame, user-visible resolution, and
+  non-drift boundaries.
 - Identify the owning module/page.
 - Name the data contract: where the value comes from, whether it is
   PUBLIC/PRIVATE, and whether it is truth, state, or derived.

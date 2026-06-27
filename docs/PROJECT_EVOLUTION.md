@@ -4,6 +4,55 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-06-27 - Ingestion Pipeline Unblocked
+
+**Status:** completed. **Scope:** config.py, schemas.py — no data model changes.
+
+**What Changed**
+
+- `WEB_SEARCH_ENABLED` default changed from `false` to `true`. Web search was the primary mechanism for resolving cards that static HTTP cannot parse (JS-rendered issuer pages), but it was disabled by default so it never fired.
+- `RefreshRequest.use_web_search` default changed from `False` to `True`. Even with `WEB_SEARCH_ENABLED=true`, the refresh endpoint required callers to explicitly pass `use_web_search=True`. The frontend never did, so every UI-triggered refresh skipped web search entirely.
+- `RefreshRequest.use_rendered_fallback` default changed from `False` to `True`. Crawl4AI rendered fallback for JS-heavy pages was also opt-in only. Now fires automatically after static+LLM pass fails.
+- `WEB_SEARCH_COOLDOWN_DAYS` default reduced from 30 to 7. Cards that failed a search were locked out for a month, preventing recovery.
+- `SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS` default reduced from 14 to 7. Same issue for benefit/multiplier supplemental searches.
+
+**Verification**
+
+- `py_compile` on config.py and schemas.py: OK.
+- 112 backend tests: all pass.
+- Config smoke test confirmed `WEB_SEARCH_ENABLED=True` and `COOLDOWN_DAYS=7` load correctly.
+
+**Rollback Notes**
+
+- Set `WEB_SEARCH_ENABLED=false` in `.env` to re-disable web search without a code change.
+- Revert `use_web_search` and `use_rendered_fallback` defaults in `schemas.py` if search costs become a concern.
+
+---
+
+## 2026-06-27 00:30 -07:00 - Project Intent Guardrail
+
+**Status:** completed. **Scope:** agent/project context alignment, WEwards intent card, and within-project drift prevention.
+
+**What Changed**
+
+- Added docs/PROJECT_INTENT_CARD.md as the compact north-star, core-loop, non-drift, and resolution-standard guardrail for WEwards.
+- Updated WEwards AGENTS.md, CLAUDE.md, and docs/CURRENT_STATE.md so future project chats load the intent card before broad planning, UI/data changes, or implementation.
+- Defined the WEwards near-term focus as reliable public-card data quality, action-first household decision surfaces, and complete workflow slices before advanced agent/autonomy work.
+
+**Verification**
+
+- Confirmed the new intent card path exists.
+- Checked that WEwards handoff/read-first docs reference docs/PROJECT_INTENT_CARD.md.
+- Workspace-level JSON/TOML validation was run after the broader DEMONFLOW context patch.
+
+**Open Risks**
+
+- This is a context/agent-behavior guardrail. It improves future agent alignment but does not replace code-level tests, browser checks, or data-source verification for feature work.
+
+**Rollback Notes**
+
+- Remove docs/PROJECT_INTENT_CARD.md and revert the WEwards doc references if this guardrail creates too much overhead.
+
 ## 2026-06-27 00:14 -07:00 - Refresh Verification Loop Fix
 
 **Status:** completed. **Scope:** Run menu deep refresh behavior, refresh scheduler cooldown semantics, LLM extraction fallback, safe-source verification, product-aware currency correction, live public catalog verification.

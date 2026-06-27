@@ -143,6 +143,7 @@ Product/workflow truth:
 - `AGENTS.md`
 - `CLAUDE.md`
 - `docs/PROJECT_PRIMER.md`
+- `docs/PROJECT_INTENT_CARD.md`
 - `docs/NEXT_TASKS.md`
 - `docs/context/VISION.md`
 - `docs/context/PROCESS.md`
@@ -212,6 +213,7 @@ Next chat should read:
 - WEwards `AGENTS.md`
 - `CLAUDE.md`
 - `docs/PROJECT_PRIMER.md`
+- `docs/PROJECT_INTENT_CARD.md`
 - `docs/CURRENT_STATE.md`
 - `docs/NEXT_TASKS.md`
 - latest 5 relevant entries from `docs/PROJECT_EVOLUTION.md`

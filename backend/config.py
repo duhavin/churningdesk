@@ -51,12 +51,12 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5").strip()
 # Web-search fallback uses a search-capable model + the server web_search tool.
 ANTHROPIC_SEARCH_MODEL: str = os.getenv("ANTHROPIC_SEARCH_MODEL", "claude-sonnet-4-6").strip()
-WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "false").lower() == "true"
+WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "true").lower() == "true"
 WEB_SEARCH_MAX_CARDS: int = int(os.getenv("WEB_SEARCH_MAX_CARDS", "8"))
 WEB_SEARCH_BATCH_SIZE: int = int(os.getenv("WEB_SEARCH_BATCH_SIZE", "8"))
 WEB_SEARCH_MAX_USES_PER_BATCH: int = int(os.getenv("WEB_SEARCH_MAX_USES_PER_BATCH", "8"))
-WEB_SEARCH_COOLDOWN_DAYS: int = int(os.getenv("WEB_SEARCH_COOLDOWN_DAYS", "30"))
-SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS: int = int(os.getenv("SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS", "14"))
+WEB_SEARCH_COOLDOWN_DAYS: int = int(os.getenv("WEB_SEARCH_COOLDOWN_DAYS", "7"))
+SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS: int = int(os.getenv("SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS", "7"))
 CRAWL4AI_ENABLED: bool = os.getenv("CRAWL4AI_ENABLED", "true").lower() == "true"
 CRAWL4AI_MAX_URLS_PER_REFRESH: int = int(os.getenv("CRAWL4AI_MAX_URLS_PER_REFRESH", "6"))
 CRAWL4AI_TIMEOUT_MS: int = int(os.getenv("CRAWL4AI_TIMEOUT_MS", "45000"))

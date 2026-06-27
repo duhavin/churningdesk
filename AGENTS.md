@@ -2,8 +2,9 @@
 
 > ## READ BEFORE YOU CODE
 > Before writing or editing code, read this file, `CLAUDE.md`,
-> `docs/PROJECT_PRIMER.md`, latest `docs/PROJECT_EVOLUTION.md`,
-> `docs/NEXT_TASKS.md`, and the relevant files in `docs/context/`.
+> `docs/PROJECT_PRIMER.md`, `docs/PROJECT_INTENT_CARD.md`,
+> latest `docs/PROJECT_EVOLUTION.md`, `docs/NEXT_TASKS.md`, and the relevant
+> files in `docs/context/`.
 > In your first message for any coding task, restate which guideline(s) apply and
 > confirm the change aligns with the Vision and Definition of Done. If a request
 > conflicts with these docs, stop and flag it.
@@ -51,6 +52,7 @@ accurate data in, optimal explainable actions out.
 
 - `CLAUDE.md` - session operating contract for Claude/Codex.
 - `docs/PROJECT_PRIMER.md` - single-doc mental model.
+- `docs/PROJECT_INTENT_CARD.md` - compact north-star, non-drift, and resolution guardrail.
 - `docs/CURRENT_STATE.md` - active project mode, paths, run commands, and Git policy.
 - `docs/PROJECT_EVOLUTION.md` - living audit/change/revert ledger.
 - `docs/AUDIT_PROMPT.md` - reusable full-codebase audit protocol.
@@ -99,11 +101,12 @@ For requests like "make it professional grade", "fix the dashboard", or
 "improve the system":
 
 1. Identify the exact page/workflow.
-2. Identify the data contract and source of truth.
-3. State what will not be changed.
-4. Implement one scoped slice.
-5. Verify with targeted tests/typecheck/build.
-6. Update `docs/PROJECT_EVOLUTION.md`.
+2. State the project intent, current problem frame, and user-visible resolution.
+3. Identify the data contract and source of truth.
+4. State what will not be changed.
+5. Implement one scoped slice.
+6. Verify with targeted tests/typecheck/build.
+7. Update `docs/PROJECT_EVOLUTION.md`.
 
 Do not bundle unrelated scoring, ingestion, and UI changes into one opaque pass.
 

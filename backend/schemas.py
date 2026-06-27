@@ -305,7 +305,7 @@ class RefreshRequest(BaseModel):
     issuer: str | None = None
     product_ids: list[int] | None = None
     source_urls: list[str] | None = None
-    use_web_search: bool = False
+    use_web_search: bool = True
     refresh_stale_days: int | None = Field(default=3, ge=0)
     force: bool = False
     batch_size: int | None = Field(default=None, ge=1, le=10)
@@ -317,7 +317,7 @@ class RefreshRequest(BaseModel):
     peak_backfill: bool = False
     refresh_valuations: bool = False
     valuations_only: bool = False
-    use_rendered_fallback: bool = False
+    use_rendered_fallback: bool = True
     background: bool = False
     # Backward-compatible flag used by the existing frontend.
     only_stale: bool | None = True
