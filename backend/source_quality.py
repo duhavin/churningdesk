@@ -193,6 +193,14 @@ def source_supports_product(
     if not product_tokens:
         return False
     haystack = _tokens(f"{normalized} {evidence_text or ''}")
+
+    # Cobrand products (Delta, Marriott, etc.) require the source to also
+    # mention at least one cobrand term even on official issuer pages.
+    # Without this, americanexpress.com/gold-card is accepted for Delta Gold.
+    product_cobrand = product_tokens & COBRAND_CONFLICT_TERMS
+    if product_cobrand and not (product_cobrand & haystack):
+        return False
+
     overlap = len(product_tokens & haystack)
     required = 1 if len(product_tokens) == 1 else min(2, len(product_tokens))
     if overlap >= required:

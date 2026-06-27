@@ -144,6 +144,20 @@ def _run_additive_migrations() -> None:
                 # keep startup non-destructive.
                 continue
         if "card_product" in existing_tables:
+            # Fix Delta SkyMiles cards that were created with issuer='Delta'
+            # instead of the correct 'American Express' (Amex issues Delta cards).
+            # Only updates rows where no existing 'American Express' record
+            # with the same product_name already exists.
+            conn.execute(text(
+                "UPDATE card_product SET issuer = 'American Express' "
+                "WHERE issuer = 'Delta' AND product_name LIKE '%SkyMiles%' "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM card_product cp2 "
+                "  WHERE cp2.issuer = 'American Express' "
+                "  AND cp2.product_name = card_product.product_name"
+                ")"
+            ))
+
             rows = conn.execute(
                 text(
                     "SELECT id, issuer, product_name, product_family FROM card_product "
