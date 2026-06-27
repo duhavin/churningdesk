@@ -199,7 +199,14 @@ def build_household(db: Session) -> dict:
                 matched_keys = keys & active_referral_keys[from_user]
                 if from_user == to_user or not matched_keys:
                     continue
-                family_route = any(key[0] == "family" for key in matched_keys)
+                exact_route = any(key[0] in {"id", "key", "variant"} for key in matched_keys)
+                candidate_family = family_key(nc["issuer"], nc["product_name"], nc.get("product_family"))
+                family_route = not exact_route and any(key[0] == "family" for key in matched_keys)
+                referral_family_key = (
+                    f"{candidate_family[0]}:{candidate_family[1]}"
+                    if candidate_family in REFERRAL_FAMILY_KEYS
+                    else None
+                )
                 product = products.get(nc["id"])
                 ref_pts = getattr(product, "referral_bonus_effective", None) if product else None
                 ref_cash = getattr(product, "referral_bonus_cash", None) if product else None
@@ -233,6 +240,7 @@ def build_household(db: Session) -> dict:
                         "data_quality_issues": nc.get("data_quality_issues", []),
                         "route": f"Refer via {from_user}{' (family)' if family_route else ''}",
                         "referral_match": "family" if family_route else "exact",
+                        "referral_family_key": referral_family_key,
                         "reason": _referral_reason(from_user, to_user, nc, ref_pts, ref_cash, ref_val, family_route),
                     }
                 )
@@ -248,9 +256,22 @@ def build_household(db: Session) -> dict:
         )
 
     referrals.sort(key=referral_sort_key, reverse=True)
+    all_referrals = list(referrals)
+
+    def referral_group_key(row: dict) -> tuple:
+        if row.get("referral_family_key"):
+            return (row["from_user"], row["to_user"], "family", row["referral_family_key"])
+        return (row["from_user"], row["to_user"], "exact", row["id"])
+
+    collapsed_referrals: dict[tuple, dict] = {}
+    for row in referrals:
+        key = referral_group_key(row)
+        if key not in collapsed_referrals:
+            collapsed_referrals[key] = row
+    referrals = sorted(collapsed_referrals.values(), key=referral_sort_key, reverse=True)
 
     # --- Merged "best next moves" (both applicants, paired by card) ---------
-    referral_index = {(r["to_user"], r["id"]): r for r in referrals}
+    referral_index = {(r["to_user"], r["id"]): r for r in all_referrals}
     moves: list[dict] = []
     actionable_statuses = {"APPLY NOW", "WATCH", "WAIT"}
     for u in users:

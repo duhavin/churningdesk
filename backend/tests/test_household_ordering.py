@@ -125,6 +125,13 @@ class HouseholdOrderingTests(unittest.TestCase):
             for row in plan["referrals"]
             if row["to_user"] == "User B" and row["product_name"] == "Capital One Venture Rewards Credit Card"
         )
+        family_referrals = [
+            row
+            for row in plan["referrals"]
+            if row["to_user"] == "User B"
+            and row["referral_match"] == "family"
+            and row.get("referral_family_key") == "capital_one:capital_one_venture"
+        ]
 
         self.assertFalse(same_user.eligible)
         self.assertEqual(same_user.block_type, "temporary")
@@ -132,6 +139,59 @@ class HouseholdOrderingTests(unittest.TestCase):
         self.assertEqual(venture_referral["from_user"], "User A")
         self.assertEqual(venture_referral["referral_match"], "family")
         self.assertIn("Refer via User A", venture_referral["route"])
+        self.assertEqual(
+            [row["product_name"] for row in family_referrals],
+            ["Capital One Venture Rewards Credit Card"],
+        )
+
+    def test_exact_referral_match_is_not_labeled_as_family_route(self):
+        db = self._session()
+        venture_x = models.CardProduct(
+            issuer="Capital One",
+            product_name="Capital One Venture X Rewards Credit Card",
+            currency="Capital One Miles",
+            annual_fee=395,
+            current_offer_points=75000,
+            current_offer_min_spend=4000,
+            current_offer_window_months=3,
+            peak_offer_points=90000,
+            referral_bonus_points=25000,
+            source_url="https://www.capitalone.com/credit-cards/venture-x/",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        )
+        db.add_all(
+            [
+                venture_x,
+                models.Valuation(currency="Capital One Miles", cpp_scraped=1.0),
+            ]
+        )
+        db.commit()
+        db.refresh(venture_x)
+        db.add(
+            models.HeldCard(
+                user="User A",
+                issuer="Capital One",
+                product_name="Venture X",
+                product_id=venture_x.id,
+                date_opened=dt.date.today() - dt.timedelta(days=365),
+                welcome_bonus_earned=True,
+                bonus_earned_date=dt.date.today() - dt.timedelta(days=365),
+                status="Active",
+            )
+        )
+        db.commit()
+
+        plan = household.build_household(db)
+        referral = next(
+            row
+            for row in plan["referrals"]
+            if row["to_user"] == "User B"
+            and row["product_name"] == "Capital One Venture X Rewards Credit Card"
+        )
+
+        self.assertEqual(referral["referral_match"], "exact")
+        self.assertEqual(referral["route"], "Refer via User A")
+        self.assertEqual(referral["referral_family_key"], "capital_one:capital_one_venture")
 
     def _session(self):
         engine = create_engine("sqlite:///:memory:")
