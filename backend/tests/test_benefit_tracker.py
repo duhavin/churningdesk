@@ -179,6 +179,55 @@ class BenefitTrackerTests(unittest.TestCase):
         self.assertFalse(any("json-ld" in name.lower() for name in names))
         self.assertFalse(any("review" in name.lower() for name in names))
 
+    def test_benefit_tracker_does_not_fallback_to_raw_fragments(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Citi",
+            product_name="Citi Custom Cash Card",
+            card_benefits=[
+                {
+                    "name": "(Instant credit limit is 10% of your credit limit, su...",
+                    "value": "$500",
+                    "frequency": "unknown",
+                    "description": "(Instant credit limit is 10% of your credit limit, subject to a minimum of $500 and a maximum of $1,000.",
+                    "evidence": "(Instant credit limit is 10% of your credit limit, subject to a minimum of $500 and a maximum of $1,000.",
+                },
+                {
+                    "name": "Cash back is earned in the form of ThankYou Points, w...",
+                    "frequency": "unknown",
+                    "description": "Cash back is earned in the form of ThankYou Points, which can be redeemed for cash back as a direct deposit, check or statement credit.",
+                    "evidence": "Cash back is earned in the form of ThankYou Points, which can be redeemed for cash back as a direct deposit, check or statement credit.",
+                },
+                {
+                    "name": "Must have or create a valid DoorDash account",
+                    "frequency": "unknown",
+                    "description": "Must have or create a valid DoorDash account.",
+                    "evidence": "Must have or create a valid DoorDash account.",
+                },
+            ],
+            source_url="https://www.doctorofcredit.com/example",
+            last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+        db.add(
+            models.HeldCard(
+                user="User A",
+                issuer="Citi",
+                product_name="Citi Custom Cash Card",
+                product_id=product.id,
+                date_opened=dt.date.today(),
+                status="Active",
+            )
+        )
+        db.commit()
+
+        tracker = benefits.build_user_benefit_tracker(db, "User A")
+
+        self.assertEqual(tracker["benefits"], [])
+        self.assertEqual(len(tracker["missing"]), 1)
+
     def test_benefit_tracker_filters_editorial_disclosure_noise(self):
         db = self._session()
         product = models.CardProduct(

@@ -367,6 +367,26 @@ def _settle_pending_changes(
             existing.status = "rejected"
 
 
+def _matching_rejected_change_exists(
+    db: Session,
+    product: models.CardProduct,
+    field: str,
+    serialized_value: str,
+) -> bool:
+    """True when the same public product/field/value was already rejected."""
+    if not product.id:
+        return False
+    return db.scalar(
+        select(models.ProposedChange.id).where(
+            models.ProposedChange.target_table == "card_product",
+            models.ProposedChange.target_id == product.id,
+            models.ProposedChange.field == field,
+            models.ProposedChange.new_value == serialized_value,
+            models.ProposedChange.status == "rejected",
+        )
+    ) is not None
+
+
 def _is_non_offer_source(source_url: str | None) -> bool:
     if not source_url:
         return False
@@ -942,6 +962,9 @@ def apply_extraction(
             committed.append(field)
         else:  # propose
             serialized = json.dumps(new_value)
+            if _matching_rejected_change_exists(db, product, field, serialized):
+                rejected.append(field)
+                continue
             existing = db.scalar(
                 select(models.ProposedChange).where(
                     models.ProposedChange.target_table == "card_product",
@@ -1027,5 +1050,7 @@ def approve_change(db: Session, change: models.ProposedChange) -> None:
 def reject_change(db: Session, change: models.ProposedChange) -> None:
     if change.status != "pending":
         return
+    if not change.reason_code:
+        change.reason_code = "user_rejected"
     change.status = "rejected"
     db.commit()

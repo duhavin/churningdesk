@@ -487,7 +487,7 @@ def _benefit_rows(card: models.HeldCard, product: models.CardProduct) -> list[di
         allow_reference=_verified_status(product) == "verified",
     )
     if raw is None:
-        raw = product.card_benefits if isinstance(product.card_benefits, list) else []
+        raw = []
     rows: list[dict] = []
     for index, item in enumerate(raw):
         if isinstance(item, str):

@@ -72,6 +72,19 @@ BENEFIT_DISCLOSURE_NOISE = (
     "cardmember offer",
     "earn more than ever",
     "same low annual fee",
+    "see rates and fees",
+    "highest level of additional benefits",
+    "how bilt points work",
+    "related:",
+    "keep in mind that the other",
+    "cash back is earned in the form of thankyou points",
+    "can be redeemed for cash back as a direct deposit",
+    "instant credit limit",
+    "valid doordash account",
+    "must have or create",
+    "you may be eligible for as high as",
+    "new cardmember offer",
+    "refer business owners",
 )
 
 BENEFIT_SIGNAL_TERMS = (
@@ -150,6 +163,11 @@ BENEFIT_NAME_PREFIX_NOISE = (
     "ink business",
     "sapphire reserve",
     "both the",
+    "s) and",
+    "cash back is earned",
+    "instant credit limit",
+    "(instant credit limit",
+    "top-tier",
     "free nights can require",
     "individuals whose",
 )
@@ -361,7 +379,8 @@ def _structured_existing(items: Any) -> list[Any]:
             continue
         if _is_bad_benefit_name(name):
             continue
-        if not is_structured and len(name) > 170:
+        money_led_benefit = bool(re.match(r"^\$\s*[1-9][0-9,]*(?:\.\d+)?", name)) and _has_benefit_signal(name)
+        if not is_structured and len(name) > 170 and not money_led_benefit:
             continue
         name_signal = _has_benefit_signal(name)
         if (is_structured and len(name) > 96) or not name_signal:

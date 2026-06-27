@@ -89,6 +89,47 @@ class IngestionGuardTests(unittest.TestCase):
         proposed = db.scalars(select(models.ProposedChange)).all()
         self.assertTrue(any(change.field == "current_offer_points" for change in proposed))
 
+    def test_rejected_identical_proposal_is_not_requeued(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="American Express",
+            product_name="American Express Business Gold Card",
+            current_offer_points=200000,
+            source_url="https://www.americanexpress.com/us/credit-cards/business/business-credit-cards/american-express-business-gold-card/",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+        db.add(
+            models.ProposedChange(
+                target_table="card_product",
+                target_id=product.id,
+                field="current_offer_points",
+                old_value=json.dumps(200000),
+                new_value=json.dumps(250000),
+                source_url="https://www.uscreditcardguide.com/amex-business-gold-rewards-card",
+                confidence=0.95,
+                status="rejected",
+            )
+        )
+        db.commit()
+
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.95,
+            current_offer_points=250000,
+            offer_status="public",
+            source_url="https://www.uscreditcardguide.com/amex-business-gold-rewards-card",
+        )
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+        pending = db.scalars(
+            select(models.ProposedChange).where(models.ProposedChange.status == "pending")
+        ).all()
+
+        self.assertIn("current_offer_points", result["rejected"])
+        self.assertEqual(product.current_offer_points, 200000)
+        self.assertEqual([], pending)
+
     def test_proposed_change_review_payload_summarizes_raw_values(self):
         product = models.CardProduct(id=1, issuer="Capital One", product_name="Venture X Rewards Credit Card")
         change = models.ProposedChange(
