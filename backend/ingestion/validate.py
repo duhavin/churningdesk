@@ -667,7 +667,20 @@ def _looks_like_non_welcome_bonus(ext: OfferExtraction, fields: dict) -> bool:
         "within the first",
         "from account opening",
     )
-    return any(term in text for term in non_welcome_terms) and not any(term in text for term in welcome_terms)
+    if any(term in text for term in non_welcome_terms) and not any(term in text for term in welcome_terms):
+        return True
+
+    # Amex/airline-style rebate caps often say "up to N points back".
+    # Those are card benefits, not public welcome-offer amounts.
+    rebate_cap_terms = (
+        "points back",
+        "pay with points",
+        "airline bonus",
+        "qualifying airline",
+        "american express travel",
+        "per calendar",
+    )
+    return "points back" in text and any(term in text for term in rebate_cap_terms if term != "points back")
 
 
 def _normalize_offer_payload(
