@@ -4,6 +4,29 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-06-26 23:03 -07:00 - CodeGraph Context Index
+
+**Status:** completed. **Scope:** local context tooling, generated graph index, Git ignore hygiene.
+
+**What Changed**
+
+- Initialized a local CodeGraph index for the WEwards project so future broad architecture, ingestion, decision-pipeline, data-reliability, and UI-flow work can start from graph-guided file selection instead of broad source reads.
+- Added `.codegraph/` to the project `.gitignore` so generated graph state remains local and cannot be committed by accident.
+
+**Verification**
+
+- CodeGraph status reported the WEwards index initialized and up to date.
+- Graph size: 80 files, 1,901 nodes, 5,233 edges.
+- Git status showed `.codegraph/` ignored and only `.gitignore` tracked.
+
+**Open Risks**
+
+- The graph is frozen because CodeGraph file watching is disabled by the workspace wrapper. Run CodeGraph `sync` after meaningful source changes before relying on it.
+
+**Rollback Notes**
+
+- Remove `.codegraph/` and revert the `.gitignore` line if the local graph should be removed.
+
 ## 2026-06-26 - WEwards Workspace Migration, Rename, And Autopush Restoration
 
 **Status:** completed. **Scope:** project identity, workspace registration, runtime naming, docs/current-state setup, personal autopush policy.
