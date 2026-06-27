@@ -84,6 +84,7 @@ MIN_APPLY_VALUE: float = float(os.getenv("MIN_APPLY_VALUE", "600"))
 MIN_APPLY_POINTS: int = int(os.getenv("MIN_APPLY_POINTS", "50000"))
 MIN_WATCH_VALUE: float = float(os.getenv("MIN_WATCH_VALUE", "300"))
 EXCEPTIONAL_PEAK_POINTS: int = int(os.getenv("EXCEPTIONAL_PEAK_POINTS", "150000"))
+MAX_APPS_PER_QUARTER: int = int(os.getenv("MAX_APPS_PER_QUARTER", "4"))
 PREFERRED_TRANSFERABLE_CURRENCIES: set[str] = {
     c.strip().lower()
     for c in os.getenv(

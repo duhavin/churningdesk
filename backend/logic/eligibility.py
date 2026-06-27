@@ -25,6 +25,10 @@ AMEX_CHARGE_LIMIT = 10
 CITI_DAYS_BETWEEN = 8
 CITI_TWO_WINDOW_DAYS = 65
 CHASE_INK_DAYS = 90
+BARCLAYS_REELIGIBILITY_MONTHS = 24
+CITI_REELIGIBILITY_MONTHS = 24
+AIRLINE_COBRAND_REELIGIBILITY_MONTHS = 24
+CAPONE_VENTURE_BUSINESS_REELIGIBILITY_MONTHS = 48
 
 
 def add_months(d: dt.date, months: int) -> dt.date:
@@ -54,6 +58,17 @@ def _is_citi(issuer: str) -> bool:
 
 def _is_capone(issuer: str) -> bool:
     return _is(issuer, "capital one", "capone")
+
+
+def _is_barclays(issuer: str) -> bool:
+    return "barclays" in (issuer or "").lower()
+
+
+def _is_airline_cobrand(product_name: str) -> bool:
+    low = (product_name or "").lower()
+    return any(term in low for term in (
+        "united", "southwest", "jetblue", "alaska", "hawaiian", "wyndham", "british airways",
+    ))
 
 
 def _same_product(held: models.HeldCard, issuer: str, product_name: str) -> bool:
@@ -392,6 +407,30 @@ def bonus_eligible_again(
     if _is_chase(held.issuer) and "sapphire" in (held.product_name or "").lower():
         if held.bonus_earned_date:
             again = add_months(held.bonus_earned_date, SAPPHIRE_MONTHS)
+            return (again <= today), again
+
+    if _is_barclays(held.issuer):
+        if held.bonus_earned_date:
+            again = add_months(held.bonus_earned_date, BARCLAYS_REELIGIBILITY_MONTHS)
+            return (again <= today), again
+
+    if _is_citi(held.issuer):
+        if held.bonus_earned_date:
+            again = add_months(held.bonus_earned_date, CITI_REELIGIBILITY_MONTHS)
+            return (again <= today), again
+
+    if (
+        _is_capone(held.issuer)
+        and "venture" in (held.product_name or "").lower()
+        and "business" in (held.product_name or "").lower()
+    ):
+        if held.bonus_earned_date:
+            again = add_months(held.bonus_earned_date, CAPONE_VENTURE_BUSINESS_REELIGIBILITY_MONTHS)
+            return (again <= today), again
+
+    if _is_airline_cobrand(held.product_name):
+        if held.bonus_earned_date:
+            again = add_months(held.bonus_earned_date, AIRLINE_COBRAND_REELIGIBILITY_MONTHS)
             return (again <= today), again
 
     # Generic: re-eligibility window unknown without a confirmed rule.

@@ -4,6 +4,41 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-06-27 - Decision Engine V2 Overhaul
+
+**Status:** completed. **Scope:** `backend/logic/` (pipeline, household, eligibility), `backend/config.py` — no schema changes, no frontend changes.
+
+**What Changed**
+
+Six targeted improvements to the decision engine:
+
+1. **Referral value into ranking** (`household.py`): `move_sort_key` now places `household_value` (welcome + referral) before raw `pipeline_rank` within the same urgency tier. Added `chase_urgent` flag to moves to preserve Chase 5/24 urgency (Chase cards under 5/24 still rank first). Added referral amount to move `reason` text. Added `REFERRAL_SUPER_FAMILIES` dict enabling cross-variant detection (Ink Cash holder → Ink Preferred applicant; Amex Gold → Business Gold).
+
+2. **BenefitUsage → renewal decisions** (`pipeline.py`): `_held_actions` now loads `BenefitUsage` rows per held card in one query and passes them to `_held_value_signal`. High utilization (≥60%) adds +10 to renewal score; zero utilization subtracts −8.
+
+3. **Household apps per quarter guardrail** (`config.py`, `household.py`): Added `MAX_APPS_PER_QUARTER=4`. `build_household` computes `total_quarter_apps` and `at_pace_cap`. Moves include `pace_warning` when at cap. Returned dict includes `quarter_apps`, `at_pace_cap`, `max_apps_per_quarter`.
+
+4. **Annual benefit dollar value in renewal** (`pipeline.py`): Added `_annual_benefit_value` helper that extracts dollar amounts from annual-cadence benefit text. `_held_value_signal` uses this instead of benefit count when data is present ($8 annual credit = 1 renewal score point, capped at 36).
+
+5. **Expanded re-eligibility windows** (`eligibility.py`): Added constants `BARCLAYS_REELIGIBILITY_MONTHS=24`, `CITI_REELIGIBILITY_MONTHS=24`, `AIRLINE_COBRAND_REELIGIBILITY_MONTHS=24`, `CAPONE_VENTURE_BUSINESS_REELIGIBILITY_MONTHS=48`. Added helpers `_is_barclays`, `_is_airline_cobrand`. Extended `bonus_eligible_again` to handle Barclays (24 mo), Citi (24 mo), Capital One Venture Business (48 mo), and airline cobrands — United, Southwest, JetBlue, Alaska, Hawaiian, Wyndham, British Airways (24 mo).
+
+6. **Expanded family referral detection** (`household.py`): Added Amex Gold, Amex Business Gold, and all Chase Ink variants (Preferred, Cash, Unlimited, Premier) to `REFERRAL_FAMILY_KEYS`. Added `REFERRAL_SUPER_FAMILIES` to group Chase Ink cards under `chase_ink` and Amex Gold/Business Gold under `amex_mr_gold`, enabling cross-variant household referral routing.
+
+**Verification**
+
+- All 112 backend tests pass after all 6 changes.
+- `test_household_moves_preserve_pipeline_rotation_before_raw_value` confirmed to still pass (Chase 5/24 urgency preserved via `chase_urgent` flag).
+
+**Rollback Notes**
+
+- All changes are behavioral, not schema migrations. `git revert` any commit to restore prior behavior.
+- To restore old `move_sort_key` ordering, remove `chase_urgent` from sort key and swap `household_value` / `_pipeline_rank_score` positions.
+- To disable quarterly guardrail: set `MAX_APPS_PER_QUARTER=999` in `.env`.
+
+**Full plan and per-change before/after:** `docs/PIPELINE_V2_OVERHAUL.md`
+
+---
+
 ## 2026-06-27 - Ingestion Pipeline Unblocked
 
 **Status:** completed. **Scope:** config.py, schemas.py — no data model changes.

@@ -17,6 +17,8 @@ already holds (the per-user pipeline already excludes held products).
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from sqlalchemy.orm import Session
 
 from .. import config, models
@@ -28,11 +30,32 @@ STATUS_PRIORITY = {"APPLY NOW": 3, "WATCH": 2, "WAIT": 1}
 REFERRAL_FAMILY_KEYS = {
     ("capital_one", "capital_one_venture"),
     ("capital_one", "capital_one_venture_business"),
+    ("american_express", "amex_gold"),
+    ("american_express", "amex_business_gold"),
+    ("chase", "chase_ink_preferred"),
+    ("chase", "chase_ink_cash"),
+    ("chase", "chase_ink_unlimited"),
+    ("chase", "chase_ink_premier"),
+}
+
+# Maps individual family keys to a broader referral group, enabling cross-variant
+# detection (e.g., Ink Cash holder → Ink Preferred applicant; Gold → Business Gold).
+REFERRAL_SUPER_FAMILIES: dict[tuple, str] = {
+    ("chase", "chase_ink_preferred"): "chase_ink",
+    ("chase", "chase_ink_cash"): "chase_ink",
+    ("chase", "chase_ink_unlimited"): "chase_ink",
+    ("chase", "chase_ink_premier"): "chase_ink",
+    ("american_express", "amex_gold"): "amex_mr_gold",
+    ("american_express", "amex_business_gold"): "amex_mr_gold",
 }
 
 
 def _key(issuer: str | None, name: str | None) -> tuple[str, str]:
     return ((issuer or "").strip().lower(), (name or "").strip().lower())
+
+
+def _is_chase(issuer: str | None) -> bool:
+    return "chase" in (issuer or "").lower()
 
 
 def _held_referral_keys(
@@ -53,9 +76,15 @@ def _held_referral_keys(
             product_family = family_key(product.issuer, product.product_name, product.product_family)
             if product_family in REFERRAL_FAMILY_KEYS:
                 keys.add(("family", product_family))
+            super_fam = REFERRAL_SUPER_FAMILIES.get(product_family)
+            if super_fam:
+                keys.add(("super_family", super_fam))
     held_family = family_key(held.issuer, held.product_name)
     if held_family in REFERRAL_FAMILY_KEYS:
         keys.add(("family", held_family))
+    super_fam = REFERRAL_SUPER_FAMILIES.get(held_family)
+    if super_fam:
+        keys.add(("super_family", super_fam))
     return keys
 
 
@@ -70,6 +99,9 @@ def _candidate_referral_keys(nc: dict) -> set[tuple[str, int | tuple[str, str]]]
     candidate_family = family_key(nc["issuer"], nc["product_name"], nc.get("product_family"))
     if candidate_family in REFERRAL_FAMILY_KEYS:
         keys.add(("family", candidate_family))
+    super_fam = REFERRAL_SUPER_FAMILIES.get(candidate_family)
+    if super_fam:
+        keys.add(("super_family", super_fam))
     return keys
 
 
@@ -270,11 +302,24 @@ def build_household(db: Session) -> dict:
             collapsed_referrals[key] = row
     referrals = sorted(collapsed_referrals.values(), key=referral_sort_key, reverse=True)
 
+    # --- Quarterly application pace ------------------------------------------
+    today = dt.date.today()
+    quarter_month = ((today.month - 1) // 3) * 3 + 1
+    quarter_start = dt.date(today.year, quarter_month, 1)
+    total_quarter_apps = sum(
+        1
+        for u in users
+        for h in active_by_user[u]
+        if h.date_opened and h.date_opened >= quarter_start
+    )
+    at_pace_cap = total_quarter_apps >= config.MAX_APPS_PER_QUARTER
+
     # --- Merged "best next moves" (both applicants, paired by card) ---------
     referral_index = {(r["to_user"], r["id"]): r for r in all_referrals}
     moves: list[dict] = []
     actionable_statuses = {"APPLY NOW", "WATCH", "WAIT"}
     for u in users:
+        under_524 = pipelines[u]["five_24"]["under_524"]
         for nc in pipelines[u]["next_cards"]:
             if nc["status"] not in actionable_statuses:
                 continue
@@ -284,6 +329,7 @@ def build_household(db: Session) -> dict:
             referral_points = ref["referral_bonus_points"] if ref and ref.get("referral_bonus_points") else 0
             referral_cash = ref["referral_bonus_cash"] if ref and ref.get("referral_bonus_cash") else 0
             product = products.get(nc["id"])
+            chase_urgent = _is_chase(nc["issuer"]) and under_524
             moves.append(
                 {
                     "user": u,
@@ -313,19 +359,33 @@ def build_household(db: Session) -> dict:
                     "referral_from": ref["from_user"] if ref else None,
                     "referral_match": ref.get("referral_match") if ref else None,
                     "referral_value": ref["referral_value"] if ref else None,
-                    "reason": nc["reason"],
+                    "chase_urgent": chase_urgent,
+                    "reason": (
+                        nc["reason"] + (
+                            f" Referral from {ref['from_user']} adds ~${ref_val:,.0f} to the household."
+                            if ref_val
+                            else f" Route via {ref['from_user']}'s referral link for bonus on top of welcome offer."
+                        )
+                        if ref else nc["reason"]
+                    ),
+                    "pace_warning": (
+                        f"Household is at {total_quarter_apps}/{config.MAX_APPS_PER_QUARTER} "
+                        "apps this quarter — confirm credit score / inquiry tolerance before applying."
+                    ) if at_pace_cap else None,
                 }
             )
 
-    # Preserve Pipeline's decision ranking instead of alphabetizing or regrouping
-    # by product. Household value and points break close calls.
+    # Chase 5/24 urgency overrides value — approvals get harder at 5/24 so Chase
+    # must come first while under 5/24. Within the same urgency tier, household
+    # value (welcome + referral bonus) ranks cards over raw pipeline position.
     def move_sort_key(row: dict) -> tuple:
         return (
             STATUS_PRIORITY.get(row.get("status"), 0),
             1 if row.get("is_exceptional") else 0,
-            _pipeline_rank_score(row.get("pipeline_rank")),
+            1 if row.get("chase_urgent") else 0,
             row.get("household_value") or 0,
             row.get("household_points") or 0,
+            _pipeline_rank_score(row.get("pipeline_rank")),
             row.get("peak_score") or 0,
             -users.index(row["user"]) if row.get("user") in users else -999,
         )
@@ -339,4 +399,7 @@ def build_household(db: Session) -> dict:
         "card_snapshot": card_snapshot,
         "referrals": referrals,
         "moves": ordered[:16],
+        "quarter_apps": total_quarter_apps,
+        "at_pace_cap": at_pace_cap,
+        "max_apps_per_quarter": config.MAX_APPS_PER_QUARTER,
     }

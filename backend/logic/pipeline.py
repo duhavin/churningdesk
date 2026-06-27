@@ -8,6 +8,7 @@ Produces, per user:
 from __future__ import annotations
 
 import datetime as dt
+import re as _re
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -461,7 +462,38 @@ def _overlap_users(
     return sorted(users)
 
 
-def _held_value_signal(card: models.HeldCard, product: models.CardProduct | None) -> tuple[int, list[str]]:
+def _annual_benefit_value(product: models.CardProduct | None) -> float:
+    """Sum dollar amounts from card_benefits entries that mention annual cadence."""
+    if not product or not product.card_benefits:
+        return 0.0
+    total = 0.0
+    items = product.card_benefits if isinstance(product.card_benefits, list) else []
+    for item in items:
+        if isinstance(item, dict):
+            text = " ".join(str(v or "") for v in item.values())
+        elif isinstance(item, str):
+            text = item
+        else:
+            continue
+        low = text.lower()
+        if not any(t in low for t in ("annual", "per year", "each year", "cardmember year", "calendar year")):
+            continue
+        # Skip text blocks that are primarily sub-annual cadences
+        if any(t in low for t in ("per month", "monthly", "each month", "quarterly")):
+            continue
+        for m in _re.finditer(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", text):
+            try:
+                total += float(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+    return total
+
+
+def _held_value_signal(
+    card: models.HeldCard,
+    product: models.CardProduct | None,
+    benefit_usages: list | None = None,
+) -> tuple[int, list[str]]:
     benefits = _list_len(product.card_benefits if product else None)
     categories = _list_len(product.earn_multipliers if product else None) or _list_len(
         product.best_category_uses if product else None
@@ -471,15 +503,38 @@ def _held_value_signal(card: models.HeldCard, product: models.CardProduct | None
     annual_fee = annual_fee or 0
 
     score = 30
-    score += min(benefits * 12, 36)
+    # Use extracted dollar value when available; fall back to benefit count
+    benefit_dollar_value = _annual_benefit_value(product)
+    if benefit_dollar_value > 0:
+        score += min(benefit_dollar_value / 8, 36)  # $8 annual benefit = 1 pt, capped at 36
+    elif benefits:
+        score += min(benefits * 12, 36)
     score += min(categories * 10, 40)
     score += 8 if downgrade_paths else 0
     score -= min(annual_fee / 35, 18)
     if card.welcome_bonus_earned:
         score += 5
 
+    # Adjust for actual benefit credit utilization when usage data is available
+    if benefit_usages:
+        trackable = [u for u in benefit_usages if getattr(u, "amount_available", None)]
+        if trackable:
+            try:
+                avg_util = sum(
+                    min((u.amount_used or 0) / u.amount_available, 1.0)
+                    for u in trackable
+                ) / len(trackable)
+                if avg_util >= 0.6:
+                    score += 10
+                elif avg_util == 0:
+                    score -= 8
+            except (TypeError, ZeroDivisionError):
+                pass
+
     drivers: list[str] = []
-    if benefits:
+    if benefit_dollar_value > 0:
+        drivers.append(f"~${benefit_dollar_value:.0f} annual benefit value")
+    elif benefits:
         drivers.append(f"{benefits} benefit(s)")
     if categories:
         drivers.append(f"{categories} earn category signal(s)")
@@ -501,6 +556,19 @@ def _held_actions(
     product_by_key = _catalog_lookup(db, context=context)
     products = list(product_by_key.values())
     overlap_index = _household_overlap_index(db, context=context)
+
+    # Load BenefitUsage for all held cards in one query for renewal scoring
+    held_ids = [h.id for h in held if h.id]
+    usage_by_held: dict[int, list] = {}
+    if held_ids:
+        usage_rows = db.scalars(
+            select(models.BenefitUsage)
+            .where(models.BenefitUsage.held_card_id.in_(held_ids))
+            .where(models.BenefitUsage.period_key != "__all__")
+        ).all()
+        for u in usage_rows:
+            usage_by_held.setdefault(u.held_card_id, []).append(u)
+
     actions = []
     for h in held:
         if h.status == "Closed":
@@ -508,7 +576,7 @@ def _held_actions(
         again_ok, again_date = elig.bonus_eligible_again(h, as_of=today)
         product = _card_product(h, product_by_id, product_by_key)
         household_overlap_users = _overlap_users(h, product, overlap_index)
-        value_score, drivers = _held_value_signal(h, product)
+        value_score, drivers = _held_value_signal(h, product, benefit_usages=usage_by_held.get(h.id))
         downgrade_paths = product.downgrade_paths if product and isinstance(product.downgrade_paths, list) else []
         ladder_alternatives = _ladder_alternatives(h, product, products, vmap)
         ladder_alternative = ladder_alternatives[0] if ladder_alternatives else None
