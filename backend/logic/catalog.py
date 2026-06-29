@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .. import models, source_quality
+from .. import config, models, source_quality
 from ..benefit_normalization import normalize_public_benefits
 from ..crypto import MissingKeyError
 from ..product_identity import canonical_product_key, derive_product_family, product_display_name, product_variant_key
@@ -29,7 +29,6 @@ CRITICAL_DECISION_FIELDS = {
     "current_offer_min_spend",
     "current_offer_window_months",
 }
-DECISION_FRESH_DAYS = 30
 
 
 def valuation_map(db: Session) -> dict[str, float]:
@@ -151,7 +150,7 @@ def _decision_quality_issues(p: models.CardProduct, pending_fields: set[str] | N
         issues.append("never_verified")
     else:
         age_days = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - p.last_verified).days
-        if age_days > DECISION_FRESH_DAYS:
+        if age_days > config.DECISION_FRESH_DAYS:
             issues.append("stale_verified_data")
     if not (p.current_offer_effective or p.current_offer_cash):
         issues.append("missing_current_offer")
@@ -361,10 +360,11 @@ def _manual_offer_to_dict(offer: models.ManualTargetedOffer | None) -> dict | No
 
 
 def has_known_bonus(p: models.CardProduct) -> bool:
-    """True if the card carries (or has ever carried) a welcome bonus."""
+    """True if the card carries (or has ever carried) a welcome bonus or first-year credit."""
     return bool(
         (p.current_offer_effective or 0)
         or (p.current_offer_cash or 0)
+        or (p.first_year_credit_value or 0)
         or (p.peak_offer_points or 0)
         or (p.targeted_peak_offer_points or 0)
         or (p.targeted_peak_offer_cash or 0)

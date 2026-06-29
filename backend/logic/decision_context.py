@@ -28,6 +28,7 @@ class DecisionContext:
     active_held_by_user: dict[str, list[models.HeldCard]]
     manual_targeted_by_user: dict[str, list[models.ManualTargetedOffer]]
     point_balances_by_user: dict[str, dict[str, float]]
+    benefit_usage_by_held: dict[int, list]
 
     @classmethod
     def load(cls, db: Session) -> "DecisionContext":
@@ -87,6 +88,19 @@ class DecisionContext:
             except MissingKeyError:
                 point_balances_by_user[user] = {}
 
+        all_held_ids = [card.id for cards in held_by_user.values() for card in cards if card.id]
+        benefit_usage_by_held: dict[int, list] = {}
+        if all_held_ids:
+            usage_rows = list(
+                db.scalars(
+                    select(models.BenefitUsage)
+                    .where(models.BenefitUsage.held_card_id.in_(all_held_ids))
+                    .where(models.BenefitUsage.period_key != "__all__")
+                ).all()
+            )
+            for u in usage_rows:
+                benefit_usage_by_held.setdefault(u.held_card_id, []).append(u)
+
         return cls(
             valuations=valuations,
             products=products,
@@ -97,6 +111,7 @@ class DecisionContext:
             active_held_by_user=active_held_by_user,
             manual_targeted_by_user=manual_targeted_by_user,
             point_balances_by_user=point_balances_by_user,
+            benefit_usage_by_held=benefit_usage_by_held,
         )
 
     def product_for_card(self, card: models.HeldCard) -> models.CardProduct | None:

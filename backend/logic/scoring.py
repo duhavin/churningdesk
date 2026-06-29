@@ -59,7 +59,10 @@ def compute_score(
     peak = public_peak or targeted_peak
     peak_is_targeted = peak > 0 and public_peak == 0
     peak_score = round(min(effective_points / peak, 1.0) * 100) if peak > 0 else 0
-    is_exceptional = _is_exceptional_offer(effective_points, peak, peak_score)
+    is_exceptional = _is_exceptional_offer(
+        effective_points, peak, peak_score,
+        first_year_credit_value=product.first_year_credit_value or 0,
+    )
 
     has_bonus_offer = bool(effective_points or (product.current_offer_cash or 0))
 
@@ -109,8 +112,15 @@ def compute_score(
     )
 
 
-def _is_exceptional_offer(effective_points: int, peak: int, peak_score: int) -> bool:
+def _is_exceptional_offer(
+    effective_points: int,
+    peak: int,
+    peak_score: int,
+    first_year_credit_value: float = 0.0,
+) -> bool:
     if effective_points >= config.EXCEPTIONAL_PEAK_POINTS:
+        return True
+    if first_year_credit_value >= config.EXCEPTIONAL_FIRST_YEAR_VALUE:
         return True
     return bool(
         peak >= config.EXCEPTIONAL_PEAK_POINTS

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config, models
+from ..crypto import MissingKeyError
 from ..product_identity import family_key, product_display_name, product_variant_key
 from . import catalog as catalog_logic
 from . import eligibility as elig
@@ -227,40 +228,48 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
 
 
 def _apply_reason(e: dict, under_524: bool) -> str:
+    min_spend = e.get("current_offer_min_spend")
+    window = e.get("current_offer_window_months")
+    if min_spend:
+        spend_suffix = f" Min spend: ${min_spend:,.0f}"
+        spend_suffix += f" in {window} months." if window else "."
+    else:
+        spend_suffix = ""
+
     issuer_chase = _is_chase(e["issuer"])
     if e.get("is_exceptional"):
         return (
             "Rare offer - grab it if eligibility and spend capacity are clean. "
             f"{e['effective_points']:,} points, value ${e['offer_value']:.0f}, "
             f"peak_score {e['peak_score']}."
-        )
+        ) + spend_suffix
     if issuer_chase and e["ownership"] == "Business" and under_524 and "ink" not in (e["product_name"] or "").lower():
         return (
             "Chase business: doesn't add to 5/24 but requires being under it - "
             f"get while under 5/24. peak_score {e['peak_score']}, "
             f"value ${e['offer_value']:.0f}."
-        )
+        ) + spend_suffix
     if issuer_chase and e["ownership"] == "Business" and under_524:
         return (
             "Chase business (Ink): doesn't add to 5/24 but requires being under it — "
             f"get while under 5/24. peak_score {e['peak_score']}, "
             f"value ${e['offer_value']:.0f}."
-        )
+        ) + spend_suffix
     if issuer_chase and under_524:
         return (
             "Chase-first while under 5/24 — Chase approvals get harder at 5/24. "
             f"peak_score {e['peak_score']}, value ${e['offer_value']:.0f}."
-        )
+        ) + spend_suffix
     if e["status"] == scoring.APPLY_NOW:
         return (
             f"Offer is {e['peak_score']}% of its all-time peak — apply now. "
             f"Value ${e['offer_value']:.0f}."
-        )
+        ) + spend_suffix
     driver = "transferable-currency accumulation" if e.get("tag") == "transferable" else "value"
     return (
         f"Eligible; peak_score {e['peak_score']}, value ${e['offer_value']:.0f}. "
         f"Ranked by {driver}."
-    )
+    ) + spend_suffix
 
 
 def _needs_review_reason(e: dict) -> str:
@@ -463,7 +472,15 @@ def _overlap_users(
 
 
 def _annual_benefit_value(product: models.CardProduct | None) -> float:
-    """Sum dollar amounts from card_benefits entries that mention annual cadence."""
+    """Sum annualized dollar amounts from card_benefits entries.
+
+    Annual blocks: sum all dollar amounts directly.
+    Monthly blocks: take the largest dollar amount × 12 (e.g. "$15/month dining" → $180).
+    Quarterly blocks: take the largest dollar amount × 4.
+    Combined annual+monthly (e.g. "$120 annual credit ($10/month)"): take the largest
+    dollar amount once, treating the annual figure as authoritative.
+    Blocks with no recognizable cadence keyword are skipped.
+    """
     if not product or not product.card_benefits:
         return 0.0
     total = 0.0
@@ -476,16 +493,31 @@ def _annual_benefit_value(product: models.CardProduct | None) -> float:
         else:
             continue
         low = text.lower()
-        if not any(t in low for t in ("annual", "per year", "each year", "cardmember year", "calendar year")):
+        is_annual = any(t in low for t in ("annual", "per year", "each year", "cardmember year", "calendar year"))
+        is_monthly = any(t in low for t in ("per month", "monthly", "each month"))
+        is_quarterly = "quarterly" in low
+
+        if not is_annual and not is_monthly and not is_quarterly:
             continue
-        # Skip text blocks that are primarily sub-annual cadences
-        if any(t in low for t in ("per month", "monthly", "each month", "quarterly")):
-            continue
+
+        amounts: list[float] = []
         for m in _re.finditer(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", text):
             try:
-                total += float(m.group(1).replace(",", ""))
+                amounts.append(float(m.group(1).replace(",", "")))
             except ValueError:
                 continue
+        if not amounts:
+            continue
+
+        if is_annual and not is_monthly and not is_quarterly:
+            total += sum(amounts)
+        elif is_annual and (is_monthly or is_quarterly):
+            # e.g. "$120 annual credit ($10/month)" — annual figure is authoritative
+            total += max(amounts)
+        elif is_monthly:
+            total += max(amounts) * 12
+        elif is_quarterly:
+            total += max(amounts) * 4
     return total
 
 
@@ -528,7 +560,7 @@ def _held_value_signal(
                     score += 10
                 elif avg_util == 0:
                     score -= 8
-            except (TypeError, ZeroDivisionError):
+            except (TypeError, ZeroDivisionError, MissingKeyError):
                 pass
 
     drivers: list[str] = []
@@ -557,17 +589,20 @@ def _held_actions(
     products = list(product_by_key.values())
     overlap_index = _household_overlap_index(db, context=context)
 
-    # Load BenefitUsage for all held cards in one query for renewal scoring
-    held_ids = [h.id for h in held if h.id]
-    usage_by_held: dict[int, list] = {}
-    if held_ids:
-        usage_rows = db.scalars(
-            select(models.BenefitUsage)
-            .where(models.BenefitUsage.held_card_id.in_(held_ids))
-            .where(models.BenefitUsage.period_key != "__all__")
-        ).all()
-        for u in usage_rows:
-            usage_by_held.setdefault(u.held_card_id, []).append(u)
+    # Use pre-loaded BenefitUsage from context when available to avoid re-querying
+    if context is not None:
+        usage_by_held: dict[int, list] = context.benefit_usage_by_held
+    else:
+        held_ids = [h.id for h in held if h.id]
+        usage_by_held = {}
+        if held_ids:
+            usage_rows = db.scalars(
+                select(models.BenefitUsage)
+                .where(models.BenefitUsage.held_card_id.in_(held_ids))
+                .where(models.BenefitUsage.period_key != "__all__")
+            ).all()
+            for u in usage_rows:
+                usage_by_held.setdefault(u.held_card_id, []).append(u)
 
     actions = []
     for h in held:
@@ -591,22 +626,24 @@ def _held_actions(
         if h.renewal_date:
             days_to_renewal = (h.renewal_date - today).days
             if 0 <= days_to_renewal <= 60:
+                annual_fee_val = h.annual_fee or (product.annual_fee if product else None) or 0
+                fee_note = f" ${annual_fee_val:,.0f} annual fee." if annual_fee_val > 0 else ""
                 if value_score >= 55:
                     action = "renew_review"
                     reason = (
-                        f"Renewal {h.renewal_date.isoformat()} — likely keep, but verify credits "
-                        f"and retention. Value score {value_score}/100 from {', '.join(drivers)}."
+                        f"Renewal {h.renewal_date.isoformat()}.{fee_note} Likely keep — value score "
+                        f"{value_score}/100 from {', '.join(drivers)}. Verify credits and retention before paying."
                     )
                 elif downgrade_paths:
                     action = "downgrade_review"
                     reason = (
-                        f"Renewal {h.renewal_date.isoformat()} — ongoing value looks thin "
+                        f"Renewal {h.renewal_date.isoformat()}.{fee_note} Ongoing value looks thin "
                         f"({value_score}/100). Compare downgrade path(s): {', '.join(map(str, downgrade_paths[:3]))}."
                     )
                 else:
                     action = "retention_review"
                     reason = (
-                        f"Renewal {h.renewal_date.isoformat()} — ask retention, then decide. "
+                        f"Renewal {h.renewal_date.isoformat()}.{fee_note} Ask retention, then decide. "
                         f"Value score {value_score}/100 from {', '.join(drivers)}."
                     )
 
@@ -629,6 +666,35 @@ def _held_actions(
                 "evaluate this account on its own credits, fee, bonus history, and spend use."
             )
 
+        # Coming-soon re-eligibility: surface upcoming windows so they can be planned
+        if not again_ok and again_date:
+            days_until_eligible = (again_date - today).days
+            if 0 < days_until_eligible <= 180:
+                reason += (
+                    f" Bonus eligible again {again_date.isoformat()} "
+                    "— flag for re-application planning."
+                )
+
+        # Min-spend deadline alert: escalate when bonus window is closing
+        if not h.min_spend_completed and h.min_spend_deadline:
+            days_to_min_spend = (h.min_spend_deadline - today).days
+            if 0 <= days_to_min_spend <= 45:
+                if days_to_min_spend <= 7:
+                    urgency = "URGENT —"
+                elif days_to_min_spend <= 14:
+                    urgency = "Warning —"
+                else:
+                    urgency = "Alert —"
+                progress_note = (
+                    f" Progress: ${h.min_spend_progress:,.0f} of ${h.min_spend_requirement:,.0f}."
+                    if (h.min_spend_progress is not None and h.min_spend_requirement)
+                    else ""
+                )
+                reason += (
+                    f" {urgency} min-spend deadline in {days_to_min_spend} day(s) "
+                    f"({h.min_spend_deadline.isoformat()}).{progress_note}"
+                )
+
         actions.append(
             {
                 "id": h.id,
@@ -638,6 +704,8 @@ def _held_actions(
                 "status": h.status,
                 "annual_fee": h.annual_fee,
                 "renewal_date": h.renewal_date.isoformat() if h.renewal_date else None,
+                "min_spend_deadline": h.min_spend_deadline.isoformat() if h.min_spend_deadline else None,
+                "min_spend_completed": h.min_spend_completed,
                 "bonus_eligible_again": again_ok,
                 "eligible_again_date": again_date.isoformat() if again_date else None,
                 "action": action,

@@ -315,7 +315,11 @@ def build_household(db: Session) -> dict:
     at_pace_cap = total_quarter_apps >= config.MAX_APPS_PER_QUARTER
 
     # --- Merged "best next moves" (both applicants, paired by card) ---------
-    referral_index = {(r["to_user"], r["id"]): r for r in all_referrals}
+    # Keep first (best-ranked) referral for each (to_user, product_id) pair — all_referrals
+    # is already sorted descending so the first write wins over later lower-value entries.
+    referral_index: dict[tuple, dict] = {}
+    for r in all_referrals:
+        referral_index.setdefault((r["to_user"], r["id"]), r)
     moves: list[dict] = []
     actionable_statuses = {"APPLY NOW", "WATCH", "WAIT"}
     for u in users:
@@ -398,7 +402,7 @@ def build_household(db: Session) -> dict:
         "balance_rows": balance_rows,
         "card_snapshot": card_snapshot,
         "referrals": referrals,
-        "moves": ordered[:16],
+        "moves": ordered[:config.HOUSEHOLD_MOVES_LIMIT],
         "quarter_apps": total_quarter_apps,
         "at_pace_cap": at_pace_cap,
         "max_apps_per_quarter": config.MAX_APPS_PER_QUARTER,
