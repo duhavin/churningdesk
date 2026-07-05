@@ -1,6 +1,6 @@
 # WEwards Current State
 
-Last updated: 2026-06-27 00:14 -07:00
+Last updated: 2026-07-05 -07:00
 
 ## Project Mode
 
@@ -90,6 +90,11 @@ Currently built:
   reliability logic.
 - Dashboard, Profiles, Card Plan, Pipeline, Household, Redemption, and Card
   Universe surfaces.
+- Local decision-engine work through `95480d7` is ready for backup: web-search
+  and rendered fallback defaults are enabled, Delta SkyMiles identity/source
+  guards are fixed, Decision Engine V2 is present, and the 14-finding audit fix
+  pass across scoring, pipeline, catalog, household, decision_context, and
+  config is complete.
 
 Known active risks:
 
@@ -191,9 +196,15 @@ External API/LLM restrictions:
 
 Remote:
 
-- `origin` still points at the pre-rename repository identity.
+- `origin` still points at the pre-rename repository identity:
+  `git@github.com:duhavin/churningdesk.git`.
 
 Default branch: `main`
+
+Current backup target:
+
+- Commit, tag, and push the current WEwards state requested 2026-07-05.
+- Rollback tag: `v2026-07-05-wewards-backup`.
 
 Autopush rule:
 

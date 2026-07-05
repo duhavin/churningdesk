@@ -4,6 +4,48 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-05 - Backup checkpoint and state debt settlement
+
+**Status:** completed; backup commit/tag/push requested. **Scope:** project state docs plus Git checkpoint for
+the existing local WEwards commits.
+
+**What Changed**
+
+- Settled WEwards state debt by updating `docs/CURRENT_STATE.md` and this
+  ledger to describe the current local decision-engine state before backup.
+- Current local history is five commits ahead of `origin/main` before this
+  docs checkpoint:
+  - `5eaf0f2` enables web search/rendered fallback defaults and tighter
+    cooldowns.
+  - `0f5c792` fixes ingestion JSON/batch/variant-conflict failures.
+  - `20e8c98` fixes Delta SkyMiles identity, issuer migration, and cobrand
+    source guard behavior.
+  - `5828752` adds Decision Engine V2: referral-aware household ranking,
+    expanded re-eligibility, benefit-value renewal scoring, and pace guardrail.
+  - `95480d7` fixes 14 audit findings across scoring, pipeline, catalog,
+    household, decision_context, and config.
+- No private household data, local databases, logs, or environment files are in
+  scope for this backup.
+
+**Verification**
+
+- `.venv-win\Scripts\python.exe -m py_compile` passed for backend entrypoints
+  and changed backend modules.
+- `.venv-win\Scripts\python.exe -c "import backend.main"` passed.
+- `.venv-win\Scripts\python.exe -m unittest discover backend.tests` passed:
+  112 tests. Existing SQLAlchemy unclosed-connection ResourceWarnings still
+  appear.
+- Sanitize preflight passed with 2 staged docs and no findings.
+- Git checkpoint commit/tag/push completed in this session; final local/remote
+  status checked after push.
+
+**Rollback Notes**
+
+- After push, use tag `v2026-07-05-wewards-backup` as the rollback reference
+  for this backed-up state.
+
+---
+
 ## 2026-06-27 - Decision Engine V2 Overhaul
 
 **Status:** completed. **Scope:** `backend/logic/` (pipeline, household, eligibility), `backend/config.py` — no schema changes, no frontend changes.
