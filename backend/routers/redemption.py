@@ -46,6 +46,18 @@ def delete_target(target_id: int, db: Session = Depends(get_db)):
     return build_redemption_plan(db)
 
 
+@router.post("/redemption/transfer-bonuses/research")
+def research_transfer_bonuses(force: bool = False, db: Session = Depends(get_db)):
+    """Sourced suggestions for CURRENT transfer bonuses (cached web search).
+
+    Read-only: the UI applies chosen suggestions via the normal
+    transfer-partner update endpoint, so a human approves every change.
+    """
+    from ..logic.redemption.bonus_research import research_transfer_bonuses as run
+
+    return run(db, force=force)
+
+
 @router.post("/redemption/transfer-partners")
 def create_transfer_partner(payload: schemas.TransferPartnerCreate, db: Session = Depends(get_db)):
     partner = models.TransferPartner(**payload.model_dump())

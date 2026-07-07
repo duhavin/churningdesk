@@ -65,6 +65,10 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "last_web_search_at": "DATETIME",
         "last_supplemental_search_at": "DATETIME",
     },
+    "transfer_partner": {
+        "bonus_pct": "FLOAT",
+        "bonus_end_date": "DATE",
+    },
     "source_config": {
         "product_id": "INTEGER",
     },
@@ -185,9 +189,11 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _run_additive_migrations()
     from .card_references import seed_card_references
+    from .transfer_partner_seed import seed_transfer_partners
 
     db = SessionLocal()
     try:
         seed_card_references(db)
+        seed_transfer_partners(db)
     finally:
         db.close()

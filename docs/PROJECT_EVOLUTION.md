@@ -4,6 +4,67 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-06 - Travel engine: transfer bonuses, multi-option awards, seeded routes
+
+**Status:** completed. **Scope:** transfer_partner schema (additive), redemption engine/providers wiring, new bonus-research module + endpoint, Redemption UI, seed module. Davin asked whether the travel engine handles transfer bonuses, current deals, and multi-option award results — gaps confirmed and closed.
+
+**Gaps found**
+
+- TransferPartner had only a static ratio: no bonus %, no expiry, no math.
+- No feed of current transfer-bonus deals.
+- The engine only ever called `estimate_cost` (single result); the provider's
+  `search_award_space` list API (incl. seats.aero) was never used, so the UI
+  showed ONE estimate per trip instead of all viable options.
+- The transfer_partner table was EMPTY — the routing engine had nothing to
+  route through.
+
+**What Changed**
+
+1. Schema (additive via `_ADDED_COLUMNS`): `transfer_partner.bonus_pct`,
+   `bonus_end_date`. Expired bonuses are ignored automatically.
+2. Engine: `_bonus_state` (effective ratio = base x (1+bonus%) while active),
+   `_program_availability` helper (bonus-aware conversions, bonused routes
+   sort first), gap-closing guidance names the bonus ("+30% through DATE").
+3. Multi-option awards: `_progress_for_target` now queries
+   `search_award_space` per preferred program plus one unrestricted pass,
+   dedupes, sorts by points cost, marks each option `covered_by_household`
+   using bonus-aware availability, caps at 8, and ships as `award_options`.
+   Works with benchmarks today and seats.aero live once the key is added.
+4. Transfer-bonus research: `logic/redemption/bonus_research.py` +
+   `POST /api/redemption/transfer-bonuses/research` — ONE cached (12h) cited
+   web search for live bonuses on the household's source currencies, strict
+   JSON validation (pct 5-200, unexpired, sourced URL), matched to partner
+   rows. READ-ONLY: the UI shows suggestions with per-row Apply buttons that
+   go through the normal partner-update endpoint — a human approves every
+   change (principle 9).
+5. Redemption UI: partner form gains bonus %/end-date fields; partner list
+   and best-transfer callout show amber bonus chips; per-trip "Award options"
+   list with covered/benchmark-vs-live markers; "Find current bonuses" panel.
+6. Seeded 49 standard PUBLIC transfer routes (Amex MR 19, Chase UR 14,
+   Capital One 16) with issuer transfer-page source URLs, only when the
+   table is empty; last_verified stays NULL until confirmed; bonus fields
+   are never seeded (promos only enter sourced or by hand).
+
+**Verification**
+
+- 147 backend tests pass (8 new: bonus state incl. expiry and non-unit
+  ratios, bonus-aware availability ordering, multi-option coverage math
+  against benchmarks, research parser validation).
+- Frontend typecheck + build clean.
+- TestClient E2E: /api/redemption serves 49 partners with bonus fields and
+  award_options per target; research endpoint returns status ok.
+- Note: one live research web search fired during endpoint verification
+  (small, cached 12h).
+
+**Rollback Notes**
+
+- `git revert`; the two new columns are additive and harmless if unused.
+- Seed rows: `DELETE FROM transfer_partner` where source_url is an issuer
+  transfer page URL, or edit rows freely — seeding never re-runs on a
+  non-empty table.
+
+---
+
 ## 2026-07-06 - Protection/coverage split + renewal-value precision
 
 **Status:** completed. **Scope:** `backend/benefit_normalization.py`, `backend/logic/{catalog,benefits,pipeline}.py`, frontend Profiles + api types, tests. No schema changes.

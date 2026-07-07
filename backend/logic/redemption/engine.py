@@ -1,6 +1,8 @@
 """Household redemption progress and accumulation guidance."""
 from __future__ import annotations
 
+import datetime as dt
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -43,6 +45,75 @@ def _ratio_value(ratio: str | None) -> float:
         return 1.0
 
 
+def _bonus_state(partner: models.TransferPartner, today: dt.date | None = None) -> tuple[float, bool]:
+    """(effective_ratio, bonus_active). A transfer bonus applies on top of the
+    base ratio until its end date passes; expired bonuses are ignored without
+    any cleanup."""
+    today = today or dt.date.today()
+    base = _ratio_value(partner.ratio)
+    pct = partner.bonus_pct or 0.0
+    active = bool(pct > 0 and (partner.bonus_end_date is None or partner.bonus_end_date >= today))
+    return (base * (1.0 + pct / 100.0) if active else base), active
+
+
+def _program_availability(
+    program: str,
+    balances: dict[str, float],
+    partners: list[models.TransferPartner],
+    today: dt.date | None = None,
+) -> dict:
+    """Direct balance + every transfer route into ``program`` (bonus-aware)."""
+    direct: list[dict] = []
+    transfers: list[dict] = []
+    available = 0.0
+    direct_balance = sum(
+        amount for currency, amount in balances.items()
+        if currency.strip().lower() == program.strip().lower()
+    )
+    if direct_balance:
+        direct.append({"program": program, "points": round(direct_balance)})
+        available += direct_balance
+    seen: set[tuple[str, str, str]] = set()
+    for partner in partners:
+        if partner.to_program.strip().lower() != program.strip().lower():
+            continue
+        key = (
+            partner.from_currency.strip().lower(),
+            partner.to_program.strip().lower(),
+            (partner.ratio or "1:1").strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        balance = sum(
+            amount for currency, amount in balances.items()
+            if currency.strip().lower() == partner.from_currency.strip().lower()
+        )
+        if not balance:
+            continue
+        effective_ratio, bonus_active = _bonus_state(partner, today)
+        converted = balance * effective_ratio
+        transfers.append(
+            {
+                "from_currency": partner.from_currency,
+                "to_program": partner.to_program,
+                "ratio": partner.ratio or "1:1",
+                "effective_ratio": round(effective_ratio, 4),
+                "bonus_pct": partner.bonus_pct if bonus_active else None,
+                "bonus_end_date": partner.bonus_end_date.isoformat()
+                if (bonus_active and partner.bonus_end_date)
+                else None,
+                "bonus_active": bonus_active,
+                "source_points": round(balance),
+                "converted_points": round(converted),
+            }
+        )
+        available += converted
+    # Bonused routes first, then by yield — the best conversion leads.
+    transfers.sort(key=lambda tr: (not tr["bonus_active"], -tr["converted_points"]))
+    return {"program": program, "available": available, "direct": direct, "transfers": transfers}
+
+
 def _programs(value: str | None) -> list[str]:
     return [p.strip() for p in (value or "").split(",") if p.strip()]
 
@@ -69,6 +140,14 @@ def _target_to_dict(target: models.TargetRedemption) -> dict:
     }
 
 
+def _dates_hint(target: models.TargetRedemption) -> str | None:
+    start = target.travel_start_date.isoformat() if target.travel_start_date else None
+    end = target.travel_end_date.isoformat() if target.travel_end_date else None
+    if start and end:
+        return f"{start}..{end}"
+    return start or end
+
+
 def _progress_for_target(
     db: Session,
     target: models.TargetRedemption,
@@ -80,56 +159,67 @@ def _progress_for_target(
     programs = _programs(target.preferred_programs) or ([result.program] if result.program else [])
     needed = result.points_cost or target.est_cost_points or 0
 
-    program_options: list[dict] = []
-    for program in programs:
-        direct: list[dict] = []
-        transfers: list[dict] = []
-        program_available = 0.0
-        direct_balance = sum(
-            amount for currency, amount in balances.items()
-            if currency.strip().lower() == program.strip().lower()
+    program_options: list[dict] = [
+        _program_availability(program, balances, partners) for program in programs
+    ]
+
+    # Every decent award option, not just the single best estimate: ask the
+    # provider per preferred program (and unrestricted when none are set),
+    # dedupe, and mark which options the household can already cover.
+    search_programs: list[str | None] = list(programs) or [None]
+    if None not in search_programs and len(search_programs) < 4:
+        search_programs.append(None)  # also surface out-of-preference deals
+    raw_options: list = []
+    for search_program in search_programs:
+        try:
+            raw_options.extend(
+                provider.search_award_space(
+                    db,
+                    origin=target.origin,
+                    region=target.destination or target.region,
+                    program=search_program,
+                    cabin=target.cabin_or_tier,
+                    dates=_dates_hint(target),
+                )
+            )
+        except Exception:
+            continue  # a failed search never blocks progress math
+    availability_cache: dict[str, float] = {
+        option["program"].strip().lower(): option["available"] for option in program_options
+    }
+    award_options: list[dict] = []
+    seen_options: set[tuple] = set()
+    for option in raw_options:
+        key = (
+            (option.program or "").strip().lower(),
+            (option.cabin or "").strip().lower(),
+            option.points_cost,
         )
-        if direct_balance:
-            direct.append({"program": program, "points": round(direct_balance)})
-            program_available += direct_balance
-        seen_transfer_sources: set[tuple[str, str, str]] = set()
-        for partner in partners:
-            if partner.to_program.strip().lower() != program.strip().lower():
-                continue
-            transfer_key = (
-                partner.from_currency.strip().lower(),
-                partner.to_program.strip().lower(),
-                (partner.ratio or "1:1").strip().lower(),
-            )
-            if transfer_key in seen_transfer_sources:
-                continue
-            seen_transfer_sources.add(transfer_key)
-            balance = sum(
-                amount for currency, amount in balances.items()
-                if currency.strip().lower() == partner.from_currency.strip().lower()
-            )
-            if not balance:
-                continue
-            ratio = _ratio_value(partner.ratio)
-            converted = balance * ratio
-            transfers.append(
-                {
-                    "from_currency": partner.from_currency,
-                    "to_program": partner.to_program,
-                    "ratio": partner.ratio or "1:1",
-                    "source_points": round(balance),
-                    "converted_points": round(converted),
-                }
-            )
-            program_available += converted
-        program_options.append(
+        if key in seen_options or not option.program:
+            continue
+        seen_options.add(key)
+        program_key = option.program.strip().lower()
+        if program_key not in availability_cache:
+            availability_cache[program_key] = _program_availability(
+                option.program, balances, partners
+            )["available"]
+        covered = bool(
+            option.points_cost and availability_cache[program_key] >= option.points_cost
+        )
+        award_options.append(
             {
-                "program": program,
-                "available": program_available,
-                "direct": direct,
-                "transfers": transfers,
+                "program": option.program,
+                "cabin": option.cabin,
+                "points_cost": option.points_cost,
+                "source": option.source,
+                "freshness": option.freshness,
+                "mode": option.mode,
+                "note": option.note,
+                "covered_by_household": covered,
             }
         )
+    award_options.sort(key=lambda o: (o["points_cost"] is None, o["points_cost"] or 0))
+    award_options = award_options[:8]
 
     if program_options:
         best_option = max(
@@ -161,11 +251,17 @@ def _progress_for_target(
     best_transfer = transfers[0] if transfers else None
     if more_needed and transfers:
         closing = next((t for t in transfers if t["converted_points"] >= more_needed), transfers[0])
-        transfer_text = (
-            f"transfer {closing['from_currency']} {closing['ratio']} to close the gap"
-            if closing
-            else None
-        )
+        if closing:
+            bonus_note = (
+                f" (+{closing['bonus_pct']:g}% bonus"
+                + (f" through {closing['bonus_end_date']}" if closing.get("bonus_end_date") else "")
+                + ")"
+                if closing.get("bonus_active") and closing.get("bonus_pct")
+                else ""
+            )
+            transfer_text = f"transfer {closing['from_currency']} {closing['ratio']}{bonus_note} to close the gap"
+        else:
+            transfer_text = None
     else:
         transfer_text = None
 
@@ -197,6 +293,7 @@ def _progress_for_target(
         "transfer_options": transfers,
         "best_transfer": best_transfer,
         "award_result": result.__dict__,
+        "award_options": award_options,
         "realized_cpp": realized_cpp,
         "buy_points_cpp": target.buy_points_cpp,
         "buy_points_worth_it": buy_points_worth_it,
@@ -242,6 +339,10 @@ def _partner_to_dict(partner: models.TransferPartner) -> dict:
         "from_currency": partner.from_currency,
         "to_program": partner.to_program,
         "ratio": partner.ratio,
+        "bonus_pct": partner.bonus_pct,
+        "bonus_end_date": partner.bonus_end_date.isoformat() if partner.bonus_end_date else None,
+        "bonus_active": _bonus_state(partner)[1],
+        "effective_ratio": round(_bonus_state(partner)[0], 4),
         "source_url": partner.source_url,
         "last_verified": partner.last_verified.isoformat() if partner.last_verified else None,
     }

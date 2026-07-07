@@ -293,7 +293,7 @@ class SourceConfig(Base):
 
 
 class TransferPartner(Base):
-    """PUBLIC — defined now, used in the later redemption phase (§5.9)."""
+    """PUBLIC — transfer routes between owned currencies and award programs."""
 
     __tablename__ = "transfer_partner"
 
@@ -301,6 +301,11 @@ class TransferPartner(Base):
     from_currency: Mapped[str] = mapped_column(String(80))
     to_program: Mapped[str] = mapped_column(String(120))
     ratio: Mapped[str | None] = mapped_column(String(40), nullable=True)  # e.g. "1:1"
+    # Time-limited transfer bonus (e.g. 30 for a "+30%" promo). The bonus is
+    # applied on top of the base ratio while bonus_end_date has not passed;
+    # an expired bonus is ignored automatically — no cleanup required.
+    bonus_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bonus_end_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_verified: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 

@@ -646,6 +646,22 @@ export interface CatalogHealthResponse {
   };
   products: CatalogHealthProduct[];
 }
+export interface TransferBonusSuggestion {
+  from_currency: string;
+  to_program: string;
+  bonus_pct: number;
+  end_date: string | null;
+  source_url: string;
+  partner_id: number | null;
+  partner_label: string | null;
+  already_recorded: boolean;
+}
+export interface TransferBonusResearch {
+  status: "ok" | "unavailable";
+  cached?: boolean;
+  note?: string;
+  suggestions: TransferBonusSuggestion[];
+}
 export interface RedemptionPlan {
   mode: "benchmark" | "live";
   live_enabled: boolean;
@@ -723,6 +739,8 @@ export const api = {
 
   // Redemption goals and transfer partners
   redemption: () => req<RedemptionPlan>("/api/redemption"),
+  researchTransferBonuses: (force = false) =>
+    req<TransferBonusResearch>(`/api/redemption/transfer-bonuses/research?force=${force}`, { method: "POST" }),
   createRedemptionTarget: (data: ApiPayload) =>
     req<ApiPayload>("/api/redemption/targets", { method: "POST", body: JSON.stringify(data) }),
   updateRedemptionTarget: (id: number, data: ApiPayload) =>

@@ -281,6 +281,8 @@ class TransferPartnerCreate(BaseModel):
     from_currency: str
     to_program: str
     ratio: str | None = "1:1"
+    bonus_pct: float | None = Field(default=None, ge=0, le=200)
+    bonus_end_date: dt.date | None = None
     source_url: str | None = None
 
 
@@ -288,6 +290,8 @@ class TransferPartnerUpdate(BaseModel):
     from_currency: str | None = None
     to_program: str | None = None
     ratio: str | None = None
+    bonus_pct: float | None = Field(default=None, ge=0, le=200)
+    bonus_end_date: dt.date | None = None
     source_url: str | None = None
 
 

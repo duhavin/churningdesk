@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, type TransferBonusSuggestion } from "../lib/api";
 import type { Flash } from "../App";
 import { Banner, Card, EmptyState, Field, SectionTitle, Spinner, fmtMoney, fmtNum } from "../components/ui";
 
@@ -26,6 +26,8 @@ type PartnerForm = {
   from_currency: string;
   to_program: string;
   ratio: string;
+  bonus_pct: string;
+  bonus_end_date: string;
   source_url: string;
 };
 
@@ -52,6 +54,8 @@ const EMPTY_PARTNER: PartnerForm = {
   from_currency: "",
   to_program: "",
   ratio: "1:1",
+  bonus_pct: "",
+  bonus_end_date: "",
   source_url: "",
 };
 
@@ -133,10 +137,13 @@ function targetPayload(form: TargetForm) {
 }
 
 function partnerPayload(form: PartnerForm) {
+  const pct = parseFloat(form.bonus_pct);
   return {
     from_currency: form.from_currency.trim(),
     to_program: form.to_program.trim(),
     ratio: form.ratio.trim() || "1:1",
+    bonus_pct: Number.isFinite(pct) && pct > 0 ? pct : null,
+    bonus_end_date: form.bonus_end_date || null,
     source_url: form.source_url.trim() || null,
   };
 }
@@ -221,6 +228,50 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
     }
   };
 
+  const [bonusSuggestions, setBonusSuggestions] = useState<TransferBonusSuggestion[] | null>(null);
+  const [bonusLoading, setBonusLoading] = useState(false);
+  const [bonusNote, setBonusNote] = useState<string | null>(null);
+
+  const findTransferBonuses = async () => {
+    setBonusLoading(true);
+    setBonusNote(null);
+    try {
+      const res = await api.researchTransferBonuses();
+      if (res.status !== "ok") {
+        setBonusNote(res.note ?? "Bonus research is unavailable.");
+        setBonusSuggestions([]);
+      } else {
+        setBonusSuggestions(res.suggestions);
+        if (res.suggestions.length === 0) setBonusNote("No live transfer bonuses found for your currencies right now.");
+      }
+    } catch (err: any) {
+      flash("error", err.message);
+    } finally {
+      setBonusLoading(false);
+    }
+  };
+
+  const applyBonusSuggestion = async (s: TransferBonusSuggestion) => {
+    if (!s.partner_id) return;
+    setSaving(true);
+    try {
+      const updated = await api.updateTransferPartner(s.partner_id, {
+        bonus_pct: s.bonus_pct,
+        bonus_end_date: s.end_date,
+        source_url: s.source_url,
+      });
+      setData(updated);
+      setBonusSuggestions((prev) =>
+        prev ? prev.map((x) => (x === s ? { ...x, already_recorded: true } : x)) : prev,
+      );
+      flash("info", `Recorded +${s.bonus_pct}% ${s.from_currency} \u2192 ${s.to_program} bonus.`);
+    } catch (err: any) {
+      flash("error", err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const editTarget = (target: any) => {
     setEditingTargetId(target.id);
     setTargetFormOpen(true);
@@ -251,6 +302,8 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
       from_currency: partner.from_currency ?? "",
       to_program: partner.to_program ?? "",
       ratio: partner.ratio ?? "1:1",
+      bonus_pct: partner.bonus_pct != null ? String(partner.bonus_pct) : "",
+      bonus_end_date: partner.bonus_end_date ?? "",
       source_url: partner.source_url ?? "",
     });
   };
@@ -372,6 +425,27 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
                     {row.best_transfer && (
                       <div className="mt-2 rounded-md border border-cyan-accent/20 bg-cyan-accent/5 px-2 py-1 text-xs text-cyan-100">
                         Transfer {fmtNum(row.best_transfer.source_points)} {row.best_transfer.from_currency} {row.best_transfer.ratio} to {row.best_transfer.to_program}.
+                        {row.best_transfer.bonus_active && row.best_transfer.bonus_pct ? (
+                          <span className="ml-1 rounded border border-amber-300/30 bg-amber-300/10 px-1 py-px text-[10px] text-amber-100">
+                            +{row.best_transfer.bonus_pct}% bonus{row.best_transfer.bonus_end_date ? ` thru ${row.best_transfer.bonus_end_date}` : ""}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
+                    {(row.award_options ?? []).length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Award options</div>
+                        {(row.award_options ?? []).map((opt: any, i: number) => (
+                          <div key={i} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-ink-400/40 bg-ink-900/60 px-2 py-1 text-[11px]">
+                            <span className="text-slate-200">{opt.program}</span>
+                            {opt.cabin && <span className="text-slate-500">{opt.cabin}</span>}
+                            <span className="tabular-nums text-slate-300">{opt.points_cost != null ? `${fmtNum(opt.points_cost)} pts` : "cost unknown"}</span>
+                            {opt.covered_by_household ? (
+                              <span className="rounded border border-emerald-300/30 bg-emerald-300/10 px-1 py-px text-[10px] text-emerald-200">covered</span>
+                            ) : null}
+                            <span className="ml-auto text-[10px] text-slate-600">{opt.mode === "live" ? "live" : "benchmark"}</span>
+                          </div>
+                        ))}
                       </div>
                     )}
                     <div className="mt-2 text-xs leading-relaxed text-slate-400">{row.guidance}</div>
@@ -563,6 +637,12 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
                 <Field label="Source URL">
                   <input className="input" value={partnerForm.source_url} onChange={(e) => setPartnerForm({ ...partnerForm, source_url: e.target.value })} />
                 </Field>
+                <Field label="Transfer bonus % (optional)">
+                  <input className="input" type="number" min="0" max="200" placeholder="e.g. 30" value={partnerForm.bonus_pct} onChange={(e) => setPartnerForm({ ...partnerForm, bonus_pct: e.target.value })} />
+                </Field>
+                <Field label="Bonus ends">
+                  <input className="input" type="date" value={partnerForm.bonus_end_date} onChange={(e) => setPartnerForm({ ...partnerForm, bonus_end_date: e.target.value })} />
+                </Field>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button className="btn-primary" disabled={saving}>{editingPartnerId ? "Save Partner" : "Add Partner"}</button>
@@ -585,6 +665,41 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
 
           </Card>
 
+          <Card>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-slate-100">Transfer bonuses</div>
+                <div className="text-[11px] text-slate-500">Live promos found from public sources; nothing applies without your click.</div>
+              </div>
+              <button className="btn-ghost py-1 text-xs" disabled={bonusLoading} onClick={findTransferBonuses}>
+                {bonusLoading ? "Searching\u2026" : "Find current bonuses"}
+              </button>
+            </div>
+            {bonusNote && <div className="text-xs text-slate-500">{bonusNote}</div>}
+            {(bonusSuggestions ?? []).length > 0 && (
+              <div className="space-y-1.5">
+                {(bonusSuggestions ?? []).map((s, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-ink-400/50 bg-ink-900 px-2.5 py-1.5 text-xs">
+                    <span className="text-slate-200">{s.from_currency} \u2192 {s.to_program}</span>
+                    <span className="rounded border border-amber-300/30 bg-amber-300/10 px-1.5 py-0.5 text-[10px] text-amber-100">
+                      +{s.bonus_pct}%{s.end_date ? ` thru ${s.end_date}` : ""}
+                    </span>
+                    <a className="truncate text-[10px] text-cyan-accent underline decoration-dotted" href={s.source_url} target="_blank" rel="noreferrer">source</a>
+                    <span className="ml-auto">
+                      {s.already_recorded ? (
+                        <span className="text-[10px] text-emerald-300">recorded</span>
+                      ) : s.partner_id ? (
+                        <button className="btn-ghost py-0.5 text-[11px]" disabled={saving} onClick={() => applyBonusSuggestion(s)}>Apply</button>
+                      ) : (
+                        <span className="text-[10px] text-slate-500">add this route first</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
           {partners.length > 0 && (
             <Card className="p-0">
               <div className="border-b border-ink-400/60 px-3 py-2 text-sm font-semibold text-slate-100 sm:px-4">
@@ -594,7 +709,14 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
                 {partners.map((partner) => (
                   <div key={partner.id} className="rounded-lg border border-ink-400/50 bg-ink-800/40 px-3 py-2">
                     <div className="text-sm text-slate-100">{partner.from_currency} to {partner.to_program}</div>
-                    <div className="text-xs text-slate-500">{partner.ratio || "1:1"}</div>
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                      <span>{partner.ratio || "1:1"}</span>
+                      {partner.bonus_active && partner.bonus_pct ? (
+                        <span className="rounded border border-amber-300/30 bg-amber-300/10 px-1.5 py-0.5 text-[10px] text-amber-100">
+                          +{partner.bonus_pct}%{partner.bonus_end_date ? ` thru ${partner.bonus_end_date}` : ""}
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button className="btn-ghost py-1 text-xs" onClick={() => editPartner(partner)}>Edit</button>
                       <button className="btn-danger py-1 text-xs" onClick={() => deletePartner(partner)}>Delete</button>
