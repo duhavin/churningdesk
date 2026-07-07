@@ -190,7 +190,7 @@ class ResearchResolverTests(unittest.TestCase):
                     resolution = research_resolver.resolve_products(products, llm_fallback=False)
 
         self.assertFalse(resolution.errors)
-        self.assertEqual(len(search_mock.call_args.args[0]), len(products) * 4)
+        self.assertEqual(len(search_mock.call_args.args[0]), len(products) * len(research_resolver.QUERY_TYPES))
         self.assertEqual(resolution.stats["cards_queued"], 5)
         self.assertEqual(resolution.stats["urls_fetched"], 5)
         self.assertGreaterEqual(resolution.stats["cards_resolved"], 5)

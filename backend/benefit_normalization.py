@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .product_identity import product_variant_key
+from .text_sanitize import clean_benefit_value, clean_text, looks_like_scrape_junk
 
 BENEFIT_DISCLOSURE_NOISE = (
     "while we don't cover all available",
@@ -306,9 +307,17 @@ def _is_bad_benefit_name(name: str) -> bool:
         return True
     if re.match(r"^\d{1,2},\s+\d{4}\b", low):
         return True
-    if "..." in name and not low.startswith("$"):
+    # Truncated scrape fragments are never valid names — no $-led exemption
+    # ("$95 The Atmos Rewards Ascent Visa Signature credit..." was junk too).
+    if "..." in name or "…" in name:
         return True
     if "after" in low and "spend" in low:
+        return True
+    # Marketing sentences welded onto a value ("$240 Business credit: Get $20
+    # statement credit per month on: Fe…") — a benefit NAME never pitches.
+    if re.search(r":\s*get\b", low) or re.search(r"\bget\s+\$", low):
+        return True
+    if looks_like_scrape_junk(name):
         return True
     if re.search(r"\$\s*[1-9][0-9]{0,2}(?:,[0-9]{3})+[^.]{0,40}\bcredit\b", low):
         return True
@@ -342,13 +351,70 @@ def _benefit(
 
 
 def _benefit_key(item: Any) -> str:
+    """Canonical concept key: NAME only, punctuation/amount-format agnostic.
+
+    'Global Entry/TSA PreCheck credit' + value '$120' and the same name with
+    value '$120,' are one benefit — value/frequency stay out of the key so
+    formatting drift can't duplicate rows.
+    """
+    name = item.get("name") if isinstance(item, dict) else item
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+
+
+def _richness(item: Any) -> int:
     if not isinstance(item, dict):
-        return re.sub(r"[^a-z0-9]+", " ", str(item or "").lower()).strip()
-    return re.sub(
-        r"[^a-z0-9]+",
-        " ",
-        f"{item.get('name')} {item.get('value')} {item.get('frequency')}".lower(),
-    ).strip()
+        return 0
+    score = 0
+    if item.get("value"):
+        score += 4
+    if item.get("frequency") not in (None, "", "unknown"):
+        score += 2
+    if item.get("category"):
+        score += 1
+    if item.get("description"):
+        score += 1
+    return score
+
+
+_GENERIC_BENEFIT_NAMES = {
+    "travel credit",
+    "hotel credit",
+    "dining credit",
+    "airline credit",
+    "statement credit",
+    "credit",
+    "benefit",
+}
+
+_DESCRIPTION_MAX_CHARS = 300
+
+
+def _clean_description(text: Any) -> str | None:
+    """Descriptions are optional color — salvage the benefit, drop the noise."""
+    cleaned = clean_text(text)
+    if not cleaned:
+        return None
+    # A stored mid-text ellipsis is truncation damage from an earlier scrape;
+    # keep only the complete sentences before it.
+    for marker in ("...", "…"):
+        if marker in cleaned:
+            head = cleaned.split(marker, 1)[0]
+            cut = head.rfind(". ")
+            cleaned = head[: cut + 1].strip() if cut >= 60 else ""
+            break
+    if not cleaned:
+        return None
+    if looks_like_scrape_junk(cleaned) or is_benefit_noise(cleaned):
+        return None
+    if len(cleaned) > _DESCRIPTION_MAX_CHARS:
+        # Trim at the last full sentence that fits; else drop (a truncated
+        # disclosure wall is worse than no description).
+        head = cleaned[:_DESCRIPTION_MAX_CHARS]
+        cut = head.rfind(". ")
+        if cut < 60:
+            return None
+        cleaned = head[: cut + 1]
+    return cleaned
 
 
 def _structured_existing(items: Any) -> list[Any]:
@@ -358,15 +424,15 @@ def _structured_existing(items: Any) -> list[Any]:
     for item in items:
         is_structured = isinstance(item, dict)
         if is_structured:
-            name = str(item.get("name") or item.get("benefit") or item.get("title") or "").strip()
-            value = item.get("value") or item.get("annual_value") or item.get("amount")
-            frequency = item.get("frequency") or item.get("cadence") or "unknown"
-            category = item.get("category") or item.get("type")
-            description = item.get("description") or item.get("notes") or item.get("detail")
-            evidence = item.get("evidence") or item.get("source_snippet")
+            name = clean_text(item.get("name") or item.get("benefit") or item.get("title"))
+            value = clean_benefit_value(item.get("value") or item.get("annual_value") or item.get("amount"))
+            frequency = clean_text(item.get("frequency") or item.get("cadence")) or "unknown"
+            category = clean_text(item.get("category") or item.get("type")) or None
+            description = _clean_description(item.get("description") or item.get("notes") or item.get("detail"))
+            evidence = _clean_description(item.get("evidence") or item.get("source_snippet"))
             confidence = item.get("confidence")
         else:
-            name = str(item or "").strip()
+            name = clean_text(item)
             value = None
             frequency = "unknown"
             category = None
@@ -375,15 +441,30 @@ def _structured_existing(items: Any) -> list[Any]:
             confidence = None
         if not name:
             continue
-        if is_benefit_noise(item):
-            continue
         if _is_bad_benefit_name(name):
             continue
-        money_led_benefit = bool(re.match(r"^\$\s*[1-9][0-9,]*(?:\.\d+)?", name)) and _has_benefit_signal(name)
-        if not is_structured and len(name) > 170 and not money_led_benefit:
+        # Noise check on the NAME (plus value/frequency), not the whole row:
+        # a real "$600 hotel credit" must survive a junk description — the
+        # description was already salvaged/dropped above.
+        if is_benefit_noise(f"{name} {value or ''} {frequency}"):
             continue
-        name_signal = _has_benefit_signal(name)
-        if (is_structured and len(name) > 96) or not name_signal:
+        if not is_structured and is_benefit_noise(item):
+            continue
+        # Long $-led raw fragments stay: the benefit tracker summarizes them
+        # into short labels downstream. Everything else long is scrape spill.
+        money_led = bool(re.match(r"^\$\s*[1-9][0-9,]*(?:\.\d+)?", name)) and _has_benefit_signal(name)
+        if not is_structured and len(name) > 170 and not money_led:
+            continue
+        if (is_structured and len(name) > 96) or not _has_benefit_signal(name):
+            continue
+        # Specificity gate: a generic label with no value, no cadence, and no
+        # category is scrape residue, not a trackable benefit.
+        if (
+            _norm(name) in _GENERIC_BENEFIT_NAMES
+            and not value
+            and frequency in ("", "unknown")
+            and not category
+        ):
             continue
         if not is_structured:
             out.append(name)
@@ -402,15 +483,19 @@ def _structured_existing(items: Any) -> list[Any]:
 
 
 def _dedupe(items: list[Any]) -> list[Any]:
-    merged: list[Any] = []
-    seen: set[str] = set()
+    """One row per benefit concept; on collision keep the richer entry."""
+    by_key: dict[str, Any] = {}
+    order: list[str] = []
     for item in items:
         key = _benefit_key(item)
-        if not key or key in seen:
+        if not key:
             continue
-        seen.add(key)
-        merged.append(item)
-    return merged
+        if key not in by_key:
+            by_key[key] = item
+            order.append(key)
+        elif _richness(item) > _richness(by_key[key]):
+            by_key[key] = item
+    return [by_key[key] for key in order]
 
 
 def _has_any(text: str, terms: tuple[str, ...]) -> bool:

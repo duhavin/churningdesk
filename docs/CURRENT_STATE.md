@@ -1,6 +1,6 @@
 # WEwards Current State
 
-Last updated: 2026-07-05 -07:00
+Last updated: 2026-07-06 -07:00
 
 ## Project Mode
 
@@ -95,6 +95,13 @@ Currently built:
   guards are fixed, Decision Engine V2 is present, and the 14-finding audit fix
   pass across scoring, pipeline, catalog, household, decision_context, and
   config is complete.
+- 2026-07-06 ingestion text-quality pass: `backend/text_sanitize.py` sanitation
+  layer (mojibake repair + scrape-junk detection), hardened benefit gates with
+  description salvage and concept dedupe, a referral research query (referral
+  bonuses were never researched before — 0/43 populated), free-text sanitation
+  in the apply path, and a `sanitize-text` catalog sweep (endpoint + Card
+  Universe button) that was run locally: junk re-scan now flags 0/43 cards.
+  133 backend tests pass; frontend typecheck/build clean.
 
 Known active risks:
 

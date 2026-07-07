@@ -47,6 +47,12 @@ def merge_catalog_duplicates(db: Session = Depends(get_db)):
     return catalog_cleanup.merge_duplicate_products(db)
 
 
+@router.post("/catalog/sanitize-text")
+def sanitize_catalog_text(db: Session = Depends(get_db)):
+    """Repair mojibake and strip scrape junk across PUBLIC catalog text."""
+    return catalog_cleanup.sanitize_catalog_text(db)
+
+
 @router.post("/catalog")
 def create_product(payload: schemas.CardProductCreate, db: Session = Depends(get_db)):
     data = payload.model_dump()

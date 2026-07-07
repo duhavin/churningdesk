@@ -4,6 +4,44 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-06 - Ingestion text-quality audit: sanitation layer, hardened gates, referral query, catalog sweep
+
+**Status:** completed. **Scope:** `backend/text_sanitize.py` (new), `backend/benefit_normalization.py`, `backend/ingestion/{research_resolver,validate}.py`, `backend/logic/catalog_cleanup.py`, `backend/routers/catalog.py`, frontend Card Universe button, tests. One-shot PUBLIC catalog data sweep.
+
+**Audit findings (Davin: offers/bonuses/referrals/benefits logging with weird text)**
+
+- PUBLIC catalog survey (43 cards): mojibake in product names ("Platinum Card�", "Atmos�"), press releases stored as benefits ("SEATTLE, WA — Alaska Airlines..."), glued navigation text ("...CenterBusiness Credit CardsView All..."), terms/disclosure fragments as standalone benefits ("One credit will be processed per account every 4 years"), truncated names, duplicate benefits differing only by value formatting ("$120" vs "$120,").
+- `referral_bonus_points` was NULL for all 43 cards and no referral proposal had EVER been created: the research plan had no referral query (referral bonuses live on refer-a-friend pages, not product pages), so extraction never saw referral text.
+- Review queue empty; the stored junk had been APPROVED through review because the pre-existing blocklist gates missed these structural patterns.
+- FE↔BE wiring cross-check: all 40+ frontend API calls match mounted backend routes (the lone scare was FastAPI 0.137's lazy `_IncludedRouter` confusing route enumeration — not a bug). Scoring/household/benefit-value math reviewed — no calculation errors found.
+
+**What Changed**
+
+1. New `backend/text_sanitize.py`: `clean_text` (programmatic cp1252↔UTF-8 mojibake repair, trademark/replacement-char stripping, whitespace collapse), `clean_benefit_value` ("$120," → "$120"; junk → None), `looks_like_scrape_junk` (press datelines, glued-navigation camelCase joins with brand whitelist, marketing phrases, disclosure sentence starts, pipes).
+2. `benefit_normalization.py` hardened: names rejected on ellipsis/truncation, marketing-welded patterns (":$ Get"), scrape junk; per-field cleaning (values normalized, descriptions salvaged separately — a good "$600 hotel credit" now survives a junk description, mid-text ellipsis descriptions trimmed to complete sentences); specificity gate (generic label + no value/cadence/category → drop); concept-level dedupe keeps the richer duplicate. Long $-led plain-string fragments still pass through for the benefit tracker's summarizer (existing design).
+3. `research_resolver.py`: new "referral" query type ("{issuer} {card} refer a friend bonus points per approved referral") so referral_bonus_points/cash can actually populate; write path already existed.
+4. `validate._normalize_offer_payload`: sanitizes best_category_uses (keys+values, junk dropped) and downgrade_paths before any write path.
+5. `catalog_cleanup.sanitize_catalog_text` sweep + `POST /api/catalog/sanitize-text` + Card Universe "Clean text" button. Identity-safe: product_name changes apply only when the product_variant_key is unchanged; duplicated leading issuer stripped iteratively.
+6. Sweep RUN against the local catalog: 36/43 products cleaned first pass + 7 second pass; junk re-scan now flags 0/43. Local pre-sweep backup: `data/wewards.pre-sanitize-20260706.db` (gitignored).
+
+**Verification**
+
+- 133 backend tests pass (112 existing + 20 new sanitizer/gate tests + 1 sweep test; one resolver test updated from hardcoded 4-queries to len(QUERY_TYPES)).
+- Frontend typecheck + build clean.
+- TestClient E2E: catalog/dashboard/pipeline/household/benefits/catalog-health/categories/redemption all 200; API-served catalog shows 0 rows with junk text.
+
+**Rollback Notes**
+
+- Code: `git revert` this commit.
+- Data: restore `data/wewards.pre-sanitize-20260706.db` over `data/wewards.db` (local only).
+- Referral query: remove "referral" from QUERY_TYPES to disable.
+
+**Open**
+
+- Referral/peak values populate on the next refresh run (web search costs apply); until then manual referral_bonus_override still wins.
+
+---
+
 ## 2026-07-05 - Backup checkpoint and state debt settlement
 
 **Status:** completed; backup commit/tag/push requested. **Scope:** project state docs plus Git checkpoint for

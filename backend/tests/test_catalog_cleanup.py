@@ -164,6 +164,64 @@ class CatalogCleanupTests(unittest.TestCase):
         Base.metadata.create_all(engine)
         return sessionmaker(bind=engine)()
 
+    def test_sanitize_catalog_text_repairs_junk_without_identity_shift(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="American Express",
+            product_name="American Express American Express® Platinum Card�",
+            notes="Terms and limitations apply.� Premium Global Assist™ Hotline",
+            card_benefits=[
+                {"name": "$600 hotel credit", "value": "$600", "frequency": "ongoing",
+                 "category": "hotel",
+                 "description": "Navigate Membership with the award winning mobile app $600 Hotel Credit"},
+                {"name": "SEATTLE, WA — Alaska Airlines' enhanced, combined loy...",
+                 "frequency": "unknown"},
+                {"name": "One credit will be processed per account every 4 year...",
+                 "frequency": "unknown"},
+                {"name": "Global Entry/TSA PreCheck credit", "value": "$120,",
+                 "frequency": "unknown", "category": "travel"},
+                {"name": "Global Entry/TSA PreCheck credit", "value": "$120",
+                 "frequency": "ongoing", "category": "travel"},
+            ],
+            best_category_uses={
+                "dining": "4x restaurants worldwide",
+                "travel": "Venture Rewards Travel Card — Apply Today| Capital One Earn unlimited",
+            },
+            source_url="https://www.americanexpress.com/platinum",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+        before_key = product_variant_key(product.issuer, product.product_name)
+
+        report = catalog_cleanup.sanitize_catalog_text(db)
+        db.refresh(product)
+
+        self.assertEqual(report["changed_count"], 1)
+        # Mojibake + trademark stripped; duplicated issuer prefix removed;
+        # identity (variant key) preserved.
+        self.assertEqual(product.product_name, "Platinum Card")
+        self.assertEqual(
+            product_variant_key(product.issuer, product.product_name), before_key
+        )
+        self.assertNotIn("�", product.notes)
+        self.assertNotIn("™", product.notes)
+
+        names = [b["name"] for b in product.card_benefits]
+        self.assertIn("$600 hotel credit", names)
+        self.assertEqual(names.count("Global Entry/TSA PreCheck credit"), 1)
+        ge = next(b for b in product.card_benefits if b["name"].startswith("Global Entry"))
+        self.assertEqual(ge["value"], "$120")
+        self.assertEqual(ge["frequency"], "ongoing")
+        for junk in ("SEATTLE", "One credit will"):
+            self.assertFalse(any(junk in n for n in names), junk)
+        hotel = next(b for b in product.card_benefits if b["name"] == "$600 hotel credit")
+        self.assertNotIn("description", hotel)  # marketing description dropped
+
+        self.assertEqual(
+            product.best_category_uses, {"dining": "4x restaurants worldwide"}
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

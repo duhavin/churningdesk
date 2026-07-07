@@ -315,3 +315,103 @@ def repair_unsafe_product_sources(db: Session, *, commit: bool = True) -> dict:
         "learned_reference_urls_removed": learned_reference_urls_removed,
         "rows": rows,
     }
+
+
+# --------------------------------------------------------------- text sweep
+
+_TEXT_SWEEP_FIELDS = ("product_name", "issuer", "notes", "product_family", "currency")
+
+
+def sanitize_catalog_text(db: Session, *, commit: bool = True) -> dict:
+    """One-shot PUBLIC catalog text sweep (2026-07-06 audit).
+
+    Repairs mojibake/trademark junk in identity+note fields, strips a
+    duplicated leading issuer from product names, re-runs the hardened
+    benefit gate over stored card_benefits, and sanitizes category-use and
+    downgrade text. Identity-safe: a product_name change is applied ONLY when
+    the variant key is unchanged, so held-card links and reference matching
+    keep working. Touches PUBLIC card_product rows only.
+    """
+    from ..benefit_normalization import normalize_public_benefits
+    from ..text_sanitize import clean_text, looks_like_scrape_junk
+
+    products = db.scalars(select(models.CardProduct)).all()
+    rows: list[dict[str, Any]] = []
+    for product in products:
+        changes: list[str] = []
+
+        # Identity + free-text scalar fields.
+        for field in _TEXT_SWEEP_FIELDS:
+            old = getattr(product, field, None)
+            if not isinstance(old, str) or not old:
+                continue
+            new = clean_text(old)
+            if field == "product_name":
+                issuer_clean = clean_text(product.issuer)
+                while issuer_clean and new.lower().startswith(issuer_clean.lower() + " "):
+                    stripped = new[len(issuer_clean) + 1 :].strip()
+                    if not stripped:
+                        break
+                    new = stripped
+                if new != old and product_variant_key(product.issuer, new) != product_variant_key(
+                    product.issuer, old
+                ):
+                    new = clean_text(old)  # keep cleaned text, skip the prefix strip
+                    if product_variant_key(product.issuer, new) != product_variant_key(
+                        product.issuer, old
+                    ):
+                        continue  # identity would shift — leave untouched
+            if new and new != old:
+                setattr(product, field, new)
+                changes.append(field)
+
+        # Stored benefits → hardened gate (drops scrape junk, cleans values,
+        # dedupes concepts, salvages good benefits from junk descriptions).
+        if product.card_benefits:
+            cleaned_benefits = normalize_public_benefits(
+                product.issuer,
+                product.product_name,
+                product.source_url,
+                product.card_benefits,
+                allow_reference=False,
+            )
+            if cleaned_benefits != product.card_benefits:
+                product.card_benefits = cleaned_benefits
+                changes.append("card_benefits")
+
+        if isinstance(product.best_category_uses, dict):
+            cleaned_uses: dict = {}
+            for key, value in product.best_category_uses.items():
+                cat = clean_text(key).lower().replace(" ", "_")
+                note = clean_text(value)
+                if not cat or not note or len(note) > 120 or looks_like_scrape_junk(note):
+                    continue
+                cleaned_uses[cat] = note
+            if cleaned_uses != product.best_category_uses:
+                product.best_category_uses = cleaned_uses or None
+                changes.append("best_category_uses")
+
+        if isinstance(product.downgrade_paths, list):
+            cleaned_paths = []
+            for path in product.downgrade_paths:
+                cleaned = clean_text(path)
+                if cleaned and len(cleaned) <= 120 and not looks_like_scrape_junk(cleaned):
+                    cleaned_paths.append(cleaned)
+            if cleaned_paths != product.downgrade_paths:
+                product.downgrade_paths = cleaned_paths or None
+                changes.append("downgrade_paths")
+
+        if changes:
+            rows.append(
+                {
+                    "product_id": product.id,
+                    "display_name": product_display_name(product.issuer, product.product_name),
+                    "changed_fields": changes,
+                }
+            )
+
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return {"changed_count": len(rows), "rows": rows}

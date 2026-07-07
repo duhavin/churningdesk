@@ -15,6 +15,11 @@ Keep the core household decision loop reliable and professional:
 
 ## Near-Term Work Candidates
 
+0. Run a catalog refresh so the new referral research query populates
+   `referral_bonus_points` (0/43 before 2026-07-06 — the query type didn't
+   exist) and re-fills peak targets under the hardened text gates. Web-search
+   cost applies; run when Davin wants current data.
+
 1. Improve data-quality visibility in Card Universe and user-facing `NEEDS DATA` states.
 2. Tighten Dashboard/Pipeline/Card Plan surfaces so the next action and binding
    reason are obvious.

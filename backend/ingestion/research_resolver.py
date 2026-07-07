@@ -30,7 +30,7 @@ MAX_RESEARCH_SNIPPETS = 10
 SNIPPET_CHARS = 550
 MAX_DETAIL_LINKS_PER_PRODUCT = 3
 
-QUERY_TYPES = ("current_offer", "issuer_page", "peak_history", "benefits")
+QUERY_TYPES = ("current_offer", "issuer_page", "peak_history", "benefits", "referral")
 
 ISSUER_DOMAINS = {
     "american express": "americanexpress.com",
@@ -216,6 +216,11 @@ def build_research_plan(product: models.CardProduct, db: Session | None = None) 
         "issuer_page": issuer_query,
         "peak_history": f"{card_name} highest ever offer peak bonus Doctor of Credit US Credit Card Guide Frequent Miler",
         "benefits": f"{card_name} benefits credits earn rates terms",
+        # What an existing cardholder earns per approved referral — this lives
+        # on refer-a-friend/marketing pages, never on the product page, so it
+        # needs its own query (referral_bonus_points was empty for every card
+        # before this existed).
+        "referral": f"{issuer} {card_name} refer a friend bonus points per approved referral",
     }
     return [
         ResearchQuery(product_id=product.id, query_type=query_type, query=query_specs[query_type])

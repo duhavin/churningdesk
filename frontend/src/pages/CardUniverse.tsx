@@ -112,6 +112,14 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
             >
               Merge duplicates
             </button>
+            <button
+              className="btn-ghost flex-1 justify-center px-2 py-1 text-xs sm:flex-none"
+              disabled={running}
+              onClick={() => run(() => api.sanitizeCatalogText(), "Text cleanup")}
+              title="Repair encoding damage and strip scrape junk from public card text"
+            >
+              Clean text
+            </button>
           </div>
         </div>
         {healthRows.length === 0 ? (

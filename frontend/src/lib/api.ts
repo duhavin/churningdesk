@@ -717,6 +717,7 @@ export const api = {
   benefits: () => req<BenefitLedger>("/api/benefits"),
   catalogHealth: () => req<CatalogHealthResponse>("/api/catalog-health"),
   mergeCatalogDuplicates: () => req<ApiPayload>("/api/catalog/duplicates/merge", { method: "POST" }),
+  sanitizeCatalogText: () => req<ApiPayload>("/api/catalog/sanitize-text", { method: "POST" }),
   cardReferences: () => req<CardReference[]>("/api/card-references"),
 
   // Redemption goals and transfer partners

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from .. import config, models, source_quality
 from ..benefit_normalization import is_benefit_noise, normalize_known_public_facts, normalize_public_benefits
 from ..product_identity import reward_currency_for_product
+from ..text_sanitize import clean_text, looks_like_scrape_junk
 from .extract import OfferExtraction
 
 
@@ -690,6 +691,32 @@ def _normalize_offer_payload(
     fields: dict,
 ) -> dict:
     fields = dict(fields)
+
+    # Free-text fields carry scraped copy — sanitize before any write path.
+    # (card_benefits goes through normalize_public_benefits separately.)
+    if isinstance(fields.get("best_category_uses"), dict):
+        cleaned_uses: dict = {}
+        for key, value in fields["best_category_uses"].items():
+            cat = clean_text(key).lower().replace(" ", "_")
+            note = clean_text(value)
+            if not cat or not note or len(note) > 120 or looks_like_scrape_junk(note):
+                continue
+            cleaned_uses[cat] = note
+        if cleaned_uses:
+            fields["best_category_uses"] = cleaned_uses
+        else:
+            fields.pop("best_category_uses", None)
+    if isinstance(fields.get("downgrade_paths"), list):
+        cleaned_paths = []
+        for path in fields["downgrade_paths"]:
+            cleaned = clean_text(path)
+            if cleaned and len(cleaned) <= 120 and not looks_like_scrape_junk(cleaned):
+                cleaned_paths.append(cleaned)
+        if cleaned_paths:
+            fields["downgrade_paths"] = cleaned_paths
+        else:
+            fields.pop("downgrade_paths", None)
+
     if "currency" in fields:
         fields["currency"] = _normalize_currency(product, fields["currency"])
     elif isinstance(product.currency, str) and product.currency.strip().lower() in GENERIC_REWARD_CURRENCIES:
