@@ -4,6 +4,59 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-06 - Anti-bloat pass: issuer velocity rules, first-year guard, wallet efficiency
+
+**Status:** completed. **Scope:** `backend/logic/{eligibility,pipeline,household}.py`, Dashboard tile, tests. Prompted by Davin: "is it truly optimized ... while not over bloating current card rotation?"
+
+**Gaps found**
+
+- No Chase 2/30 velocity rule (only Ink spacing) and no Capital One
+  ~1-per-6-months spacing — the engine could recommend applications that get
+  auto-denied, wasting hard inquiries and 5/24 slots.
+- Nothing prevented a downgrade/cancel recommendation inside the first 12
+  months — welcome-bonus clawback risk on exactly the cards churned for.
+- Fee-vs-benefit math only surfaced 60 days before renewal; card bloat was
+  invisible the rest of the year.
+
+**What Changed**
+
+1. Eligibility: Chase 2/30 (2 Chase cards in trailing 30 days -> temporary
+   block with the correct drop date) and Capital One spacing (~1 approval per
+   6 months, 182-day window). Both follow the existing Amex-velocity pattern
+   and classify as temporary blocks with earliest-eligible dates.
+2. Pipeline held actions: FIRST-YEAR GUARD annotation on downgrade/cancel/
+   retention actions when the account is under 365 days, plus per-card
+   `annual_benefit_value` and `net_annual_value` (benefit value minus fee)
+   on every action row.
+3. Household payload: new `wallet` block — total annual fees, total
+   annualized benefit value, net, and the negative-net card shortlist
+   (the downgrade/cancel candidates, subject to the first-year guard).
+4. Dashboard: the "Annual fees" tile became "Fees vs benefit value" showing
+   fees and net with a good/warn accent.
+
+**Live finding**
+
+The household wallet is currently fee-negative: $2,600 fees vs $1,588
+tracked benefit value (net -$1,012), 4 cards individually negative — the
+exact bloat signal this pass makes visible. (Benefit value counts tracked
+credits only, not earn-rate utility or in-flight bonuses; year-one keeps are
+covered by the guard.)
+
+**Verification**
+
+- 159 backend tests pass (4 new velocity tests: Chase 2/30 block + drop
+  date, allow at 1/30, Capital One spacing block + clear after window). One
+  pre-existing fixture aged out of the new Capital One window so it keeps
+  testing family suppression rather than velocity.
+- Frontend typecheck + build clean; live checks confirm the wallet block and
+  guarded action fields.
+
+**Rollback Notes**
+
+- `git revert`; no schema changes.
+
+---
+
 ## 2026-07-06 - One-tap refresh, system self-review, quote-verified peak resolver + live data runs
 
 **Status:** completed; three live ingestion runs executed with Davin's approval. **Scope:** ingestion (schedule/extract/validate + new peak_research module), run router, TopNav, tests.

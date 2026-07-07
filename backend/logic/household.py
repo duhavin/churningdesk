@@ -404,6 +404,52 @@ def build_household(db: Session) -> dict:
         "referrals": referrals,
         "moves": ordered[:config.HOUSEHOLD_MOVES_LIMIT],
         "quarter_apps": total_quarter_apps,
+        "wallet": _wallet_efficiency(db, pipelines),
         "at_pace_cap": at_pace_cap,
         "max_apps_per_quarter": config.MAX_APPS_PER_QUARTER,
+    }
+
+
+def _wallet_efficiency(db, pipelines: dict) -> dict:
+    """Household fee-vs-benefit balance so card bloat is visible at a glance.
+
+    net = annualized benefit value (precise, structured-first) minus annual
+    fees over ACTIVE held cards for both users. Cards with negative net are
+    the downgrade/cancel shortlist — subject to the first-year guard.
+    """
+    from .pipeline import _annual_benefit_value
+    from sqlalchemy import select
+
+    held = [
+        card
+        for card in db.scalars(select(models.HeldCard)).all()
+        if card.user in config.USERS
+        and (card.status or "").lower() not in ("closed", "cancelled", "canceled")
+    ]
+    products = {p.id: p for p in db.scalars(select(models.CardProduct)).all()}
+    total_fees = 0.0
+    total_benefits = 0.0
+    negative: list[dict] = []
+    for card in held:
+        product = products.get(card.product_id) if card.product_id else None
+        fee = float(card.annual_fee or (product.annual_fee if product else 0) or 0)
+        benefit_value = _annual_benefit_value(product)
+        total_fees += fee
+        total_benefits += benefit_value
+        if fee > 0 and benefit_value - fee < 0:
+            negative.append(
+                {
+                    "user": card.user,
+                    "display_name": product_display_name(card.issuer, card.product_name),
+                    "annual_fee": fee,
+                    "annual_benefit_value": round(benefit_value, 2),
+                    "net": round(benefit_value - fee, 2),
+                }
+            )
+    negative.sort(key=lambda row: row["net"])
+    return {
+        "total_annual_fees": round(total_fees, 2),
+        "total_annual_benefit_value": round(total_benefits, 2),
+        "net_annual_value": round(total_benefits - total_fees, 2),
+        "negative_net_cards": negative,
     }

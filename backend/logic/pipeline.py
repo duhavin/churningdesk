@@ -651,9 +651,12 @@ def _held_actions(
                 usage_by_held.setdefault(u.held_card_id, []).append(u)
 
     actions = []
+    benefit_dollar_value_by_id: dict[int, float] = {}
     for h in held:
         if h.status == "Closed":
             continue
+        _p = _card_product(h, product_by_id, product_by_key)
+        benefit_dollar_value_by_id[h.id] = _annual_benefit_value(_p)
         again_ok, again_date = elig.bonus_eligible_again(h, as_of=today)
         product = _card_product(h, product_by_id, product_by_key)
         household_overlap_users = _overlap_users(h, product, overlap_index)
@@ -712,6 +715,22 @@ def _held_actions(
                 "evaluate this account on its own credits, fee, bonus history, and spend use."
             )
 
+        # First-year clawback guard: never encourage a downgrade/cancel while
+        # the account is under 12 months — issuers can claw back the bonus,
+        # and that bonus was the whole point of the application.
+        account_age_days = (today - h.date_opened).days if h.date_opened else None
+        first_year_guard = bool(
+            account_age_days is not None
+            and account_age_days < 365
+            and action in ("downgrade", "cancel", "downgrade_review", "retention_review")
+        )
+        if first_year_guard:
+            reason += (
+                " FIRST-YEAR GUARD: this account is under 12 months old — downgrading or "
+                "cancelling now risks welcome-bonus clawback. Wait until after the first "
+                "annual fee posts."
+            )
+
         # Coming-soon re-eligibility: surface upcoming windows so they can be planned
         if not again_ok and again_date:
             days_until_eligible = (again_date - today).days
@@ -758,6 +777,17 @@ def _held_actions(
                 "reason": reason,
                 "value_score": value_score,
                 "value_drivers": drivers,
+                "annual_benefit_value": round(benefit_dollar_value_by_id.get(h.id, 0.0), 2)
+                if isinstance(benefit_dollar_value_by_id, dict)
+                else None,
+                "net_annual_value": round(
+                    benefit_dollar_value_by_id.get(h.id, 0.0)
+                    - float(h.annual_fee or (product.annual_fee if product else 0) or 0),
+                    2,
+                )
+                if isinstance(benefit_dollar_value_by_id, dict)
+                else None,
+                "first_year_guard": first_year_guard,
                 "downgrade_paths": downgrade_paths,
                 "household_overlap_users": household_overlap_users,
                 "ladder_alternative": ladder_alternative,

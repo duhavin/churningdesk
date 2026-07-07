@@ -207,7 +207,11 @@ export function Dashboard({
 
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 md:gap-4">
         <Stat label="Active cards" value={String(activeCards.length)} />
-        <Stat label="Annual fees" value={fmtMoney(annualFees)} />
+        <Stat
+          label="Fees vs benefit value"
+          value={household?.wallet ? `${fmtMoney(household.wallet.total_annual_fees)} / ${fmtMoney(household.wallet.net_annual_value)} net` : fmtMoney(annualFees)}
+          accent={household?.wallet ? (household.wallet.net_annual_value >= 0 ? "good" : "warn") : undefined}
+        />
         <Stat label="Needs attention" value={String(attention.length)} accent={attention.length ? "warn" : "good"} />
         <Stat label="Household points value" value={fmtMoney(household?.combined_est_value)} />
       </div>

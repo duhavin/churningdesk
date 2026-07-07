@@ -1054,7 +1054,9 @@ class IngestionGuardTests(unittest.TestCase):
                 issuer="Capital One",
                 product_name="Venture X Rewards Credit Card",
                 product_id=venture_x.id,
-                date_opened=dt.date.today(),
+                # Outside the Capital One 6-month velocity window so this test
+                # exercises same-family suppression, not the spacing rule.
+                date_opened=dt.date.today() - dt.timedelta(days=200),
                 status="Active",
             )
         )

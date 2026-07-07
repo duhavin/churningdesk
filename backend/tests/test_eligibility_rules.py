@@ -78,5 +78,58 @@ class EligibilityRuleTests(unittest.TestCase):
         return sessionmaker(bind=engine)()
 
 
+class VelocityRuleTests(unittest.TestCase):
+    """Issuer velocity rules that prevent wasted applications (2026-07-06)."""
+
+    def _session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    def _held(self, db, issuer, name, days_ago, **kw):
+        card = models.HeldCard(
+            user="User A", issuer=issuer, product_name=name,
+            date_opened=dt.date.today() - dt.timedelta(days=days_ago),
+            status="Active", **kw,
+        )
+        db.add(card)
+        db.commit()
+        return card
+
+    def test_chase_2_30_blocks_third_application(self):
+        db = self._session()
+        self._held(db, "Chase", "Freedom Flex", 5)
+        self._held(db, "Chase", "Freedom Unlimited Credit Card", 20)
+        result = eligibility.eligibility(db, "User A", "Chase", "Sapphire Preferred Card", ownership="Personal")
+        self.assertFalse(result.eligible)
+        self.assertTrue(any("2/30" in r for r in result.reasons))
+        # The older in-window card ages out first: drop = opened + 30 days.
+        expected = (dt.date.today() - dt.timedelta(days=20)) + dt.timedelta(days=30)
+        self.assertEqual(result.earliest_eligible_date, expected)
+
+    def test_chase_2_30_allows_when_one_recent(self):
+        db = self._session()
+        self._held(db, "Chase", "Freedom Flex", 5)
+        self._held(db, "Chase", "Freedom Unlimited Credit Card", 45)
+        result = eligibility.eligibility(db, "User A", "Chase", "Sapphire Preferred Card", ownership="Personal")
+        self.assertFalse(any("2/30" in r for r in result.reasons))
+
+    def test_capital_one_six_month_spacing(self):
+        db = self._session()
+        self._held(db, "Capital One", "Savor Cash Rewards Credit Card", 90)
+        result = eligibility.eligibility(db, "User A", "Capital One", "Venture X Rewards Credit Card", ownership="Personal")
+        self.assertFalse(result.eligible)
+        self.assertTrue(any("6 months" in r for r in result.reasons))
+        expected = (dt.date.today() - dt.timedelta(days=90)) + dt.timedelta(days=182)
+        self.assertEqual(result.earliest_eligible_date, expected)
+
+    def test_capital_one_clear_after_window(self):
+        db = self._session()
+        self._held(db, "Capital One", "Savor Cash Rewards Credit Card", 200)
+        result = eligibility.eligibility(db, "User A", "Capital One", "Venture X Rewards Credit Card", ownership="Personal")
+        self.assertFalse(any("6 months" in r for r in result.reasons))
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,9 @@ AMEX_CHARGE_LIMIT = 10
 CITI_DAYS_BETWEEN = 8
 CITI_TWO_WINDOW_DAYS = 65
 CHASE_INK_DAYS = 90
+CHASE_VELOCITY_DAYS = 30
+CHASE_VELOCITY_LIMIT = 2  # widely enforced 2/30 across Chase applications
+CAPONE_VELOCITY_DAYS = 182  # Capital One approves ~1 card per 6 months
 BARCLAYS_REELIGIBILITY_MONTHS = 24
 CITI_REELIGIBILITY_MONTHS = 24
 AIRLINE_COBRAND_REELIGIBILITY_MONTHS = 24
@@ -254,6 +257,29 @@ def eligibility(
                 f"Chase 5/24: {f24.count} personal-credit cards opened in the last "
                 "24 months (must be under 5)."
             )
+        # Chase 2/30 velocity: more than 2 approvals in 30 days is an
+        # effectively-automatic denial — a wasted inquiry and 5/24 slot.
+        recent_chase = sorted(
+            [
+                h
+                for h in held
+                if _is_chase(h.issuer)
+                and h.date_opened
+                and h.status != "Closed"
+                and (today - h.date_opened).days < CHASE_VELOCITY_DAYS
+            ],
+            key=lambda h: h.date_opened,
+            reverse=True,
+        )
+        if len(recent_chase) >= CHASE_VELOCITY_LIMIT:
+            drop = recent_chase[CHASE_VELOCITY_LIMIT - 1].date_opened + dt.timedelta(
+                days=CHASE_VELOCITY_DAYS
+            )
+            earliest = _max_date(earliest, drop)
+            reasons.append(
+                f"Chase 2/30 velocity: {len(recent_chase)} Chase cards opened in the "
+                "last 30 days (limit 2/30)."
+            )
         if "sapphire" in name_low:
             target_variant = product_variant_key(issuer, product_name)
             target_is_personal = ownership == "Personal" and bool(
@@ -337,6 +363,25 @@ def eligibility(
 
     # --- Capital One: conservative re: recent inquiries (informational) ----
     if _is_capone(issuer):
+        # ~1 approval per 6 months: applying sooner is a near-certain denial.
+        recent_capone = sorted(
+            [
+                h
+                for h in held
+                if _is_capone(h.issuer)
+                and h.date_opened
+                and (today - h.date_opened).days < CAPONE_VELOCITY_DAYS
+            ],
+            key=lambda h: h.date_opened,
+            reverse=True,
+        )
+        if recent_capone:
+            drop = recent_capone[0].date_opened + dt.timedelta(days=CAPONE_VELOCITY_DAYS)
+            earliest = _max_date(earliest, drop)
+            reasons.append(
+                "Capital One spacing: a Capital One card was opened in the last "
+                "6 months (~1 approval per 6 months)."
+            )
         target_variant = product_variant_key(issuer, product_name)
         venture_bonus_variants = {
             ("capital_one", "capital_one_venture_personal"),
@@ -383,6 +428,7 @@ def eligibility(
             "65-day",
             "limit reached",
             "ink spacing",
+            "capital one spacing",
             "one-sapphire",
         )
     )
