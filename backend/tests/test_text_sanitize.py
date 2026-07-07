@@ -199,5 +199,43 @@ class HeldCardTemplateTests(unittest.TestCase):
         self.assertFalse(any("Cell phone" in b["name"] for b in out))
 
 
+class ProtectionSplitTests(unittest.TestCase):
+    """Coverage benefits classify out of the tracker (2026-07-06)."""
+
+    def test_protection_classification(self):
+        from backend.benefit_normalization import is_protection_benefit
+
+        self.assertTrue(is_protection_benefit({"name": "Cell phone protection", "category": "protection"}))
+        self.assertTrue(is_protection_benefit({"name": "Extended warranty", "frequency": "ongoing"}))
+        self.assertTrue(is_protection_benefit("Trip cancellation/interruption insurance"))
+        self.assertFalse(is_protection_benefit({"name": "$300 annual travel credit", "value": "$300"}))
+        self.assertFalse(is_protection_benefit({"name": "Priority Pass", "category": "travel"}))
+        self.assertFalse(is_protection_benefit({"name": "Global Entry/TSA credit", "value": "$120"}))
+
+    def test_annualized_benefit_value_structured_first(self):
+        from backend.logic.pipeline import _annual_benefit_value
+
+        class P:
+            card_benefits = [
+                {"name": "$10 monthly Uber Cash", "value": "$10", "frequency": "monthly"},
+                {"name": "$250 semiannual Edit credit", "value": "$250", "frequency": "semiannual"},
+                {"name": "$300 travel credit", "value": "$300", "frequency": "annual"},
+                {"name": "Cell phone protection", "value": "$800", "frequency": "ongoing",
+                 "category": "protection"},
+            ]
+
+        # 10*12 + 250*2 + 300 = 920; the $800 protection never counts.
+        self.assertEqual(_annual_benefit_value(P()), 920.0)
+
+    def test_annualized_text_fallback_handles_semiannual(self):
+        from backend.logic.pipeline import _annual_benefit_value
+
+        class P:
+            card_benefits = ["$50 credit semi-annually at partner restaurants"]
+
+        self.assertEqual(_annual_benefit_value(P()), 100.0)
+
+
+
 if __name__ == "__main__":
     unittest.main()

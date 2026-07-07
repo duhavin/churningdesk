@@ -471,33 +471,77 @@ def _overlap_users(
     return sorted(users)
 
 
+def _annualized_from_structured(item: dict) -> float | None:
+    """Annualize a structured benefit (value + frequency fields).
+
+    Returns None when the entry has no parseable value/frequency, so the
+    text heuristic can take over.
+    """
+    raw_value = item.get("value")
+    frequency = str(item.get("frequency") or "").strip().lower()
+    if raw_value in (None, "") or not frequency:
+        return None
+    m = _re.search(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", str(raw_value))
+    if not m:
+        return None
+    try:
+        amount = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    multipliers = {
+        "monthly": 12.0,
+        "quarterly": 4.0,
+        "semiannual": 2.0,
+        "semi-annual": 2.0,
+        "biannual": 2.0,
+        "annual": 1.0,
+        "cardmember_year": 1.0,
+        "anniversary": 1.0,
+        "yearly": 1.0,
+    }
+    multiplier = multipliers.get(frequency)
+    if multiplier is None:
+        return None
+    return amount * multiplier
+
+
 def _annual_benefit_value(product: models.CardProduct | None) -> float:
     """Sum annualized dollar amounts from card_benefits entries.
 
-    Annual blocks: sum all dollar amounts directly.
-    Monthly blocks: take the largest dollar amount × 12 (e.g. "$15/month dining" → $180).
-    Quarterly blocks: take the largest dollar amount × 4.
-    Combined annual+monthly (e.g. "$120 annual credit ($10/month)"): take the largest
-    dollar amount once, treating the annual figure as authoritative.
-    Blocks with no recognizable cadence keyword are skipped.
+    Structured entries (value + known frequency) annualize exactly:
+    monthly x12, quarterly x4, semiannual x2, annual/cardmember-year x1.
+    Coverage/protection benefits are excluded — they offset risk, not the
+    annual fee, and inflating renewal value with them skews retention calls.
+    Unstructured text falls back to the cadence-keyword heuristic.
     """
+    from ..benefit_normalization import is_protection_benefit
+
     if not product or not product.card_benefits:
         return 0.0
     total = 0.0
     items = product.card_benefits if isinstance(product.card_benefits, list) else []
     for item in items:
+        if is_protection_benefit(item):
+            continue
         if isinstance(item, dict):
+            structured = _annualized_from_structured(item)
+            if structured is not None:
+                total += structured
+                continue
             text = " ".join(str(v or "") for v in item.values())
         elif isinstance(item, str):
             text = item
         else:
             continue
         low = text.lower()
-        is_annual = any(t in low for t in ("annual", "per year", "each year", "cardmember year", "calendar year"))
+        is_semiannual = any(t in low for t in ("semiannual", "semi-annual", "semi-annually", "biannual"))
+        is_annual = (not is_semiannual) and any(
+            t in low for t in ("annual", "per year", "each year", "cardmember year", "calendar year")
+        )
         is_monthly = any(t in low for t in ("per month", "monthly", "each month"))
         is_quarterly = "quarterly" in low
 
-        if not is_annual and not is_monthly and not is_quarterly:
+        if not is_annual and not is_monthly and not is_quarterly and not is_semiannual:
             continue
 
         amounts: list[float] = []
@@ -514,6 +558,8 @@ def _annual_benefit_value(product: models.CardProduct | None) -> float:
         elif is_annual and (is_monthly or is_quarterly):
             # e.g. "$120 annual credit ($10/month)" — annual figure is authoritative
             total += max(amounts)
+        elif is_semiannual:
+            total += max(amounts) * 2
         elif is_monthly:
             total += max(amounts) * 12
         elif is_quarterly:

@@ -172,6 +172,7 @@ export interface CatalogEntry {
   earn_multipliers: Record<string, number | string> | null;
   best_category_uses: Record<string, string> | null;
   card_benefits: BenefitDefinition[] | null;
+  card_protections: string[] | null;
   downgrade_paths: JsonValue[] | null;
   eligibility_tags: string[] | null;
   tag: string | null;

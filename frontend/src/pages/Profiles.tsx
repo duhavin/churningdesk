@@ -690,6 +690,13 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const activeProfileCards = cards.filter((card) => !isArchivedCard(card));
   const archivedProfileCards = cards.filter(isArchivedCard);
   const visibleProfileCards = showArchivedCards ? archivedProfileCards : activeProfileCards;
+  // Coverage/insurance perks live here in card details, not in the tracker.
+  const protectionsByProduct = useMemo(
+    () => new Map(catalog.map((row) => [row.id, row.card_protections ?? []])),
+    [catalog],
+  );
+  const coverageFor = (c: HeldCard) =>
+    c.product_id != null ? protectionsByProduct.get(c.product_id) ?? [] : [];
 
   return (
     <div className="space-y-6">
@@ -1004,6 +1011,11 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                           <span>Credit report</span><span className="text-slate-300">{five24CardStatusLabel(c)}</span>
                         </div>
                         {c.notes && <div className="text-[11px] text-slate-500">{c.notes}</div>}
+                        {coverageFor(c).length > 0 && (
+                          <div className="text-[11px] text-slate-500">
+                            <span className="text-slate-600">Coverage</span> {coverageFor(c).join(" · ")}
+                          </div>
+                        )}
                         <CardActions
                           card={c}
                           className="border-t border-ink-500/60 pt-1.5"
@@ -1078,6 +1090,11 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                             {c.notes}
                           </div>
                         ) : null}
+                        {coverageFor(c).length > 0 && (
+                          <div className="mt-2 text-[11px] text-slate-500">
+                            <span className="text-slate-600">Coverage</span> {coverageFor(c).join(" · ")}
+                          </div>
+                        )}
                         <CardActions
                           card={c}
                           className="mt-3 border-t border-ink-500/60 pt-2"

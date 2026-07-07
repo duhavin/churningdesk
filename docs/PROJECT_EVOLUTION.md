@@ -4,6 +4,52 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-06 - Protection/coverage split + renewal-value precision
+
+**Status:** completed. **Scope:** `backend/benefit_normalization.py`, `backend/logic/{catalog,benefits,pipeline}.py`, frontend Profiles + api types, tests. No schema changes.
+
+**Why**
+
+Davin: coverage/protection benefits (cell phone protection, warranties, trip
+insurance) are not spendable and should not clutter the benefits tracker —
+show them minimally in card details on the profile page. Also asked for any
+judgment/ingestion/travel improvements I saw.
+
+**What Changed**
+
+1. `is_protection_benefit` classifier (category=protection or coverage-term
+   match). Catalog `product_to_dict` now splits display benefits into
+   `card_benefits` (spendable/trackable) + new `card_protections` (names
+   only). The benefits tracker (`_benefit_rows`) skips protections entirely,
+   so they never appear in the ledger, attention alerts, or usage tracking.
+2. Profiles page: expanded card details (mobile + desktop) show a one-line
+   "Coverage" list from the linked product's protections — minimal slate
+   text, no chrome.
+3. Renewal-value precision (`pipeline._annual_benefit_value`): structured
+   entries (value + frequency) now annualize exactly — monthly x12,
+   quarterly x4, semiannual x2 (previously counted ONCE: a $250 semiannual
+   credit under-valued by $250/yr), annual x1 — with the text heuristic as
+   fallback (now also semiannual-aware). Protections are excluded from
+   renewal value: they offset risk, not the annual fee.
+4. Travel/redemption engine reviewed for math issues: division guards, cpp
+   formula, transfer-ratio conversion, and gap-closing suggestions all
+   correct — no changes needed; goes live with SEATS_AERO_API_KEY as built.
+
+**Verification**
+
+- 139 backend tests pass (3 new: protection classification, structured
+  annualization incl. protection exclusion, semiannual text fallback).
+- Frontend typecheck + build clean.
+- TestClient E2E: `card_protections` populated (e.g. Ink Business Premier ->
+  cell phone/purchase/warranty), zero protection leakage into
+  `card_benefits`.
+
+**Rollback Notes**
+
+- `git revert` this commit; display-path split means no data rollback needed.
+
+---
+
 ## 2026-07-06 - Held-card benefit templates, Dashboard freshness strip (hands-off goal)
 
 **Status:** completed. **Scope:** `backend/benefit_normalization.py`, `backend/tests/test_text_sanitize.py`, `frontend/src/pages/Dashboard.tsx`. No schema changes.

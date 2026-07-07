@@ -963,6 +963,41 @@ def _sapphire_reserve_business_benefits(source_url: str | None, text: str, allow
     return benefits
 
 
+_PROTECTION_TERMS = (
+    "purchase protection",
+    "extended warranty",
+    "cell phone protection",
+    "trip cancellation",
+    "trip interruption",
+    "trip delay",
+    "baggage insurance",
+    "lost luggage",
+    "rental car coverage",
+    "auto rental collision",
+    "travel accident insurance",
+    "return protection",
+    "roadside assist",
+    "global assist",
+    "fraud liability",
+    "purchase security",
+)
+
+
+def is_protection_benefit(item: Any) -> bool:
+    """Coverage/insurance-style benefits: real, but not spendable/trackable.
+
+    These belong in card details (Profiles expanded view), not in the
+    credits/benefits tracker — there is nothing to redeem or use up.
+    """
+    if isinstance(item, dict):
+        if _norm(item.get("category")) == "protection":
+            return True
+        text = _norm(f"{item.get('name')} {item.get('description')}")
+    else:
+        text = _norm(item)
+    return any(term in text for term in _PROTECTION_TERMS)
+
+
 def normalize_public_benefits(
     issuer: str | None,
     product_name: str | None,

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import config, models
-from ..benefit_normalization import is_benefit_noise, normalize_public_benefits
+from ..benefit_normalization import is_benefit_noise, is_protection_benefit, normalize_public_benefits
 from ..crypto import MissingKeyError
 from ..product_identity import product_display_name, product_variant_key
 from .decision_context import DecisionContext, key
@@ -490,6 +490,10 @@ def _benefit_rows(card: models.HeldCard, product: models.CardProduct) -> list[di
         raw = []
     rows: list[dict] = []
     for index, item in enumerate(raw):
+        # Coverage/insurance benefits have nothing to use or track — they
+        # live in card details (Profiles), never in the credits tracker.
+        if is_protection_benefit(item):
+            continue
         if isinstance(item, str):
             name = item.strip()
             value = item.strip()

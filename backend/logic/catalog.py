@@ -12,7 +12,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .. import config, models, source_quality
-from ..benefit_normalization import normalize_public_benefits
+from ..benefit_normalization import is_protection_benefit, normalize_public_benefits
 from ..crypto import MissingKeyError
 from ..product_identity import canonical_product_key, derive_product_family, product_display_name, product_variant_key
 from . import eligibility as elig
@@ -185,17 +185,35 @@ def _blocks_apply_decision(issues: list[str]) -> bool:
     return any(issue in blocking for issue in issues)
 
 
-def _display_benefits(p: models.CardProduct) -> list | None:
-    return normalize_public_benefits(
+def _display_benefits(p: models.CardProduct) -> tuple[list | None, list[str]]:
+    """(spendable/trackable benefits, protection names).
+
+    Coverage/insurance benefits are real but not actionable — they render as
+    a compact Coverage line in card details, never in the credits tracker.
+    """
+    rows = normalize_public_benefits(
         p.issuer,
         p.product_name,
         p.source_url,
         p.card_benefits,
         allow_reference=_verified_status(p) == "verified",
     )
+    if not rows:
+        return None, []
+    trackable: list = []
+    protections: list[str] = []
+    for row in rows:
+        if is_protection_benefit(row):
+            name = row.get("name") if isinstance(row, dict) else str(row)
+            if name:
+                protections.append(str(name))
+        else:
+            trackable.append(row)
+    return (trackable or None), protections
 
 
 def product_to_dict(p: models.CardProduct) -> dict:
+    benefits, protections = _display_benefits(p)
     return {
         "id": p.id,
         "issuer": p.issuer,
@@ -230,7 +248,8 @@ def product_to_dict(p: models.CardProduct) -> dict:
         "first_year_credit_value": p.first_year_credit_value,
         "earn_multipliers": p.earn_multipliers,
         "best_category_uses": p.best_category_uses,
-        "card_benefits": _display_benefits(p),
+        "card_benefits": benefits,
+        "card_protections": protections,
         "downgrade_paths": p.downgrade_paths,
         "eligibility_tags": p.eligibility_tags,
         "tag": p.tag,
