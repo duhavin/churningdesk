@@ -104,6 +104,20 @@ export function Dashboard({
     .slice(0, 4);
   const annualFees = activeCards.reduce((sum, c) => sum + (c.annual_fee ?? 0), 0);
   const catalogById = useMemo(() => new Map(catalog.map((row) => [row.id, row])), [catalog]);
+  // Data freshness: decisions are only as good as the last verification.
+  // The refresh pipeline treats >3 days as stale — surface that here so no
+  // one has to go check Card Universe to know the data needs a refresh tap.
+  const staleness = useMemo(() => {
+    if (!catalog.length) return null;
+    const now = Date.now();
+    const staleMs = 3 * 24 * 60 * 60 * 1000;
+    let stale = 0;
+    for (const row of catalog) {
+      const ts = row.last_verified ? Date.parse(row.last_verified) : NaN;
+      if (!Number.isFinite(ts) || now - ts > staleMs) stale += 1;
+    }
+    return { stale, total: catalog.length };
+  }, [catalog]);
   const referenceByKey = useMemo(() => new Map(references.map((row) => [row.canonical_key, row])), [references]);
   const mobileActionTabs = [
     { id: "next", label: "Next", count: moves.length },
@@ -180,6 +194,16 @@ export function Dashboard({
         title="Dashboard"
         subtitle="Household overview: what we hold, what needs attention, and what to do next."
       />
+
+      {staleness && staleness.stale > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300/30 bg-amber-300/5 px-3 py-2 text-xs text-amber-100">
+          <span>
+            Card data: {staleness.stale} of {staleness.total} cards not verified in the last 3 days —
+            recommendations may lag current offers.
+          </span>
+          <span className="text-amber-200/70">Use “Refresh offers” in the top bar to update.</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 md:gap-4">
         <Stat label="Active cards" value={String(activeCards.length)} />

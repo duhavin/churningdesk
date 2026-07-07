@@ -4,6 +4,55 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-06 - Held-card benefit templates, Dashboard freshness strip (hands-off goal)
+
+**Status:** completed. **Scope:** `backend/benefit_normalization.py`, `backend/tests/test_text_sanitize.py`, `frontend/src/pages/Dashboard.tsx`. No schema changes.
+
+**Why**
+
+Davin's north-star restated: the household should never research manually — complete, clean benefit tracking per held card (the Amex Gold curated rows were the quality bar), decision surfaces that carry timing/referral context, and a travel tab that goes live the moment SEATS_AERO_API_KEY is added.
+
+**What Changed**
+
+1. Curated benefit templates added for the held cards that lacked them:
+   Freedom Unlimited + Freedom Flex (DashPass/$10 quarterly DoorDash promo,
+   Flex cell phone protection, shared Chase protections), Ink Business
+   Premier (cell phone/purchase/warranty protections), Amex Business Gold
+   ($20 monthly flexible business credit, $100 Hotel Collection credit,
+   protections), Sapphire Reserve for Business ($300 annual travel credit,
+   $250 semiannual The Edit hotel credit, lounge access, Global Entry/TSA
+   credit, DashPass, $10 monthly Lyft credit). Citi Custom Cash deliberately
+   gets NO template - it has no trackable credits, and an honest empty state
+   beats invented rows. Dispatch refactored to a variant->builder registry.
+   Same trust model as the existing three templates: official-issuer host
+   required; in normal ingestion each row needs its trigger terms in source
+   text; the full set renders only for verified products (allow_reference).
+2. Dashboard freshness strip: when any catalog card has not been verified in
+   3 days (the refresh pipeline's own staleness bar), a compact banner shows
+   "X of Y cards not verified" and points at the existing top-bar Refresh
+   actions. Closes the "you had to go check" gap without silent web-search
+   spend (principle 10: web search stays a deliberate action).
+3. Confirmed the travel tab is already key-ready: SeatsAeroProvider is
+   config-gated (SEATS_AERO_ENABLED = key present) with benchmark fallback
+   and a live/benchmark banner on the Redemption page - drop the key in
+   `.env` and it switches to live award availability. No changes needed.
+
+**Verification**
+
+- 136 backend tests pass (3 new template tests: full set on verified
+  official source, nothing on untrusted hosts, FU never gets Flex-only cell
+  phone protection).
+- Frontend typecheck + build clean.
+- Gate-path smoke: verified-official -> full curated set; blog URL -> stored
+  clean rows only; official + text trigger -> matching rows only.
+
+**Rollback Notes**
+
+- `git revert` this commit; templates are read-time, so no data rollback is
+  needed.
+
+---
+
 ## 2026-07-06 - Ingestion text-quality audit: sanitation layer, hardened gates, referral query, catalog sweep
 
 **Status:** completed. **Scope:** `backend/text_sanitize.py` (new), `backend/benefit_normalization.py`, `backend/ingestion/{research_resolver,validate}.py`, `backend/logic/catalog_cleanup.py`, `backend/routers/catalog.py`, frontend Card Universe button, tests. One-shot PUBLIC catalog data sweep.

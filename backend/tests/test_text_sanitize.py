@@ -163,5 +163,41 @@ class HardenedBenefitGateTests(unittest.TestCase):
         self.assertEqual(out[0]["name"], "$300 Capital One Travel credit")
 
 
+class HeldCardTemplateTests(unittest.TestCase):
+    """Curated benefit templates for household-held cards (2026-07-06)."""
+
+    def test_verified_official_returns_full_set(self):
+        cases = [
+            ("Chase", "Freedom Unlimited Credit Card", "https://www.chase.com/fu",
+             {"DashPass membership", "$10 quarterly DoorDash promo", "Purchase protection"}),
+            ("Chase", "Freedom Flex", "https://www.chase.com/ff",
+             {"Cell phone protection", "$10 quarterly DoorDash promo"}),
+            ("Chase", "Ink Business Premier Credit Card", "https://www.chase.com/ink",
+             {"Cell phone protection", "Purchase protection"}),
+            ("American Express", "Business Gold Card", "https://www.americanexpress.com/bg",
+             {"$20 monthly flexible business credit", "$100 Hotel Collection credit"}),
+            ("Chase", "Sapphire Reserve for Business Credit Card", "https://www.chase.com/csrb",
+             {"$300 annual travel credit", "Airport lounge access", "Global Entry/TSA/NEXUS credit"}),
+        ]
+        for issuer, name, url, expected in cases:
+            out = normalize_public_benefits(issuer, name, url, [], allow_reference=True) or []
+            names = {b["name"] for b in out}
+            self.assertTrue(expected.issubset(names), f"{name}: {names}")
+
+    def test_untrusted_host_gets_no_curated_rows(self):
+        out = normalize_public_benefits(
+            "Chase", "Sapphire Reserve for Business Credit Card",
+            "https://some-affiliate.example/csrb", [], allow_reference=True,
+        )
+        self.assertIsNone(out)
+
+    def test_freedom_unlimited_never_gets_flex_cell_phone(self):
+        out = normalize_public_benefits(
+            "Chase", "Freedom Unlimited Credit Card", "https://www.chase.com/fu",
+            [], allow_reference=True,
+        ) or []
+        self.assertFalse(any("Cell phone" in b["name"] for b in out))
+
+
 if __name__ == "__main__":
     unittest.main()

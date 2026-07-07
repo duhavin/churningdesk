@@ -716,6 +716,253 @@ def _venture_x_benefits(source_url: str | None, text: str, allow_reference: bool
     return benefits
 
 
+def _chase_shared_protections(text: str, allow_reference: bool) -> list[dict[str, Any]]:
+    """Purchase/warranty/trip protections shared by Chase Freedom-family cards."""
+    benefits: list[dict[str, Any]] = []
+    if allow_reference or "purchase protection" in text:
+        benefits.append(
+            _benefit(
+                "Purchase protection",
+                None,
+                "ongoing",
+                "protection",
+                "Covers new purchases against damage or theft for 120 days, up to $500 per claim.",
+                "Purchase protection covers eligible purchases for 120 days.",
+            )
+        )
+    if allow_reference or "extended warranty" in text:
+        benefits.append(
+            _benefit(
+                "Extended warranty",
+                None,
+                "ongoing",
+                "protection",
+                "Extends eligible U.S. manufacturer warranties of three years or less by one additional year.",
+                "Extended warranty protection on eligible purchases.",
+            )
+        )
+    if allow_reference or "trip cancellation" in text:
+        benefits.append(
+            _benefit(
+                "Trip cancellation/interruption insurance",
+                None,
+                "ongoing",
+                "travel",
+                "Reimbursement for eligible prepaid, non-refundable travel when a covered situation cancels or cuts the trip short.",
+                "Trip cancellation and interruption insurance on eligible bookings.",
+            )
+        )
+    return benefits
+
+
+def _freedom_family_benefits(source_url: str | None, text: str, allow_reference: bool, *, flex: bool) -> list[dict[str, Any]]:
+    host = _source_host(source_url)
+    if not host.endswith("chase.com"):
+        return []
+    benefits: list[dict[str, Any]] = []
+    if allow_reference or _has_any(text, ("dashpass", "doordash")):
+        benefits.append(
+            _benefit(
+                "DashPass membership",
+                None,
+                "membership",
+                "dining",
+                "Complimentary DashPass membership when activated by the issuer deadline.",
+                "Complimentary DashPass membership with eligible activation.",
+            )
+        )
+        benefits.append(
+            _benefit(
+                "$10 quarterly DoorDash promo",
+                "$10",
+                "quarterly",
+                "dining",
+                "Quarterly DoorDash promo credit for DashPass members on eligible orders.",
+                "DashPass members receive a $10 quarterly promo credit.",
+            )
+        )
+    if flex and (allow_reference or "cell phone" in text):
+        benefits.append(
+            _benefit(
+                "Cell phone protection",
+                "$800",
+                "ongoing",
+                "protection",
+                "Covers damage or theft up to $800 per claim (two claims per 12 months, $50 deductible) when the monthly bill is paid with the card.",
+                "Cell phone protection up to $800 per claim when you pay your monthly bill with the card.",
+            )
+        )
+    benefits.extend(_chase_shared_protections(text, allow_reference))
+    return benefits
+
+
+def _ink_premier_benefits(source_url: str | None, text: str, allow_reference: bool) -> list[dict[str, Any]]:
+    host = _source_host(source_url)
+    if not host.endswith("chase.com"):
+        return []
+    benefits: list[dict[str, Any]] = []
+    if allow_reference or "cell phone" in text:
+        benefits.append(
+            _benefit(
+                "Cell phone protection",
+                "$1,000",
+                "ongoing",
+                "protection",
+                "Covers damage or theft up to $1,000 per claim (three claims per 12 months, $100 deductible) when the monthly bill is paid with the card.",
+                "Cell phone protection up to $1,000 per claim when the monthly bill is paid with the card.",
+            )
+        )
+    if allow_reference or "purchase protection" in text:
+        benefits.append(
+            _benefit(
+                "Purchase protection",
+                None,
+                "ongoing",
+                "protection",
+                "Covers new purchases against damage or theft for 120 days, up to $10,000 per claim.",
+                "Purchase protection for eligible business purchases.",
+            )
+        )
+    if allow_reference or "extended warranty" in text:
+        benefits.append(
+            _benefit(
+                "Extended warranty",
+                None,
+                "ongoing",
+                "protection",
+                "Extends eligible manufacturer warranties of three years or less by one additional year.",
+                "Extended warranty protection on eligible purchases.",
+            )
+        )
+    return benefits
+
+
+def _amex_business_gold_benefits(source_url: str | None, text: str, allow_reference: bool) -> list[dict[str, Any]]:
+    host = _source_host(source_url)
+    if not host.endswith("americanexpress.com"):
+        return []
+    benefits: list[dict[str, Any]] = []
+    if allow_reference or _has_any(text, ("fedex", "grubhub", "office supply", "$240 business credit", "flexible business credit")):
+        benefits.append(
+            _benefit(
+                "$20 monthly flexible business credit",
+                "$20",
+                "monthly",
+                "business",
+                "Monthly statement credit on eligible U.S. purchases at FedEx, Grubhub, and office supply stores; enrollment required.",
+                "$240 Flexible Business Credit: up to $20 in statement credits each month at FedEx, Grubhub, and office supply stores.",
+            )
+        )
+    if allow_reference or _has_any(text, ("hotel collection", "two-night minimum")):
+        benefits.append(
+            _benefit(
+                "$100 Hotel Collection credit",
+                "$100",
+                "ongoing",
+                "hotel",
+                "Eligible charge credit on The Hotel Collection bookings through Amex Travel with a two-night minimum.",
+                "The Hotel Collection: $100 credit toward eligible charges on qualifying bookings.",
+            )
+        )
+    if allow_reference or "extended warranty" in text:
+        benefits.append(
+            _benefit(
+                "Extended warranty",
+                None,
+                "ongoing",
+                "protection",
+                "Extends eligible manufacturer warranties on covered purchases.",
+                "Extended warranty on eligible purchases.",
+            )
+        )
+    if allow_reference or "purchase protection" in text:
+        benefits.append(
+            _benefit(
+                "Purchase protection",
+                None,
+                "ongoing",
+                "protection",
+                "Covers eligible purchases against accidental damage or theft for 90 days.",
+                "Purchase protection on eligible purchases.",
+            )
+        )
+    return benefits
+
+
+def _sapphire_reserve_business_benefits(source_url: str | None, text: str, allow_reference: bool) -> list[dict[str, Any]]:
+    host = _source_host(source_url)
+    if not host.endswith("chase.com"):
+        return []
+    benefits: list[dict[str, Any]] = []
+    if allow_reference or _has_any(text, ("$300 annual travel credit", "annual travel credit", "$300 travel")):
+        benefits.append(
+            _benefit(
+                "$300 annual travel credit",
+                "$300",
+                "annual",
+                "travel",
+                "Annual statement credit automatically applied to travel purchases.",
+                "$300 Annual Travel Credit on travel purchases each account anniversary year.",
+            )
+        )
+    if allow_reference or "the edit" in text:
+        benefits.append(
+            _benefit(
+                "$250 semiannual The Edit hotel credit",
+                "$250",
+                "semiannual",
+                "hotel",
+                "Statement credit for prepaid The Edit hotel bookings, split into January-June and July-December halves ($500 total per year).",
+                "Up to $500 annually ($250 semiannually) for prepaid hotel bookings through The Edit.",
+            )
+        )
+    if allow_reference or _has_any(text, ("priority pass", "sapphire lounge", "lounge access")):
+        benefits.append(
+            _benefit(
+                "Airport lounge access",
+                None,
+                "membership",
+                "travel",
+                "Chase Sapphire Lounge by The Club locations plus Priority Pass Select membership after enrollment.",
+                "Complimentary access to Chase Sapphire Lounges and Priority Pass Select.",
+            )
+        )
+    if allow_reference or _has_any(text, ("global entry", "tsa precheck", "nexus")):
+        benefits.append(
+            _benefit(
+                "Global Entry/TSA/NEXUS credit",
+                "$120",
+                "one_time",
+                "travel",
+                "Application fee credit every four years for Global Entry, TSA PreCheck, or NEXUS.",
+                "Up to $120 application fee credit every four years.",
+            )
+        )
+    if allow_reference or _has_any(text, ("dashpass", "doordash")):
+        benefits.append(
+            _benefit(
+                "DashPass membership",
+                None,
+                "membership",
+                "dining",
+                "Complimentary DashPass membership when activated by the issuer deadline.",
+                "Complimentary DashPass membership with eligible activation.",
+            )
+        )
+    if allow_reference or "lyft" in text:
+        benefits.append(
+            _benefit(
+                "$10 monthly Lyft credit",
+                "$10",
+                "monthly",
+                "travel",
+                "Monthly in-app Lyft credit plus elevated points on eligible Lyft rides through the issuer end date.",
+                "$10 in-app Lyft credit each month with eligible rides.",
+            )
+        )
+    return benefits
+
+
 def normalize_public_benefits(
     issuer: str | None,
     product_name: str | None,
@@ -732,13 +979,21 @@ def normalize_public_benefits(
     """
     variant = product_variant_key(issuer, product_name)
     text = _raw_text(items)
+    builders = {
+        ("american_express", "amex_gold"): _amex_gold_benefits,
+        ("american_express", "amex_business_gold"): _amex_business_gold_benefits,
+        ("chase", "chase_sapphire_preferred"): _sapphire_preferred_benefits,
+        ("chase", "chase_sapphire_business"): _sapphire_reserve_business_benefits,
+        ("chase", "chase_ink_premier"): _ink_premier_benefits,
+        ("capital_one", "capital_one_venture_x_personal"): _venture_x_benefits,
+    }
     known: list[dict[str, Any]] = []
-    if variant == ("american_express", "amex_gold"):
-        known = _amex_gold_benefits(source_url, text, allow_reference)
-    elif variant == ("chase", "chase_sapphire_preferred"):
-        known = _sapphire_preferred_benefits(source_url, text, allow_reference)
-    elif variant == ("capital_one", "capital_one_venture_x_personal"):
-        known = _venture_x_benefits(source_url, text, allow_reference)
+    if variant == ("chase", "chase_freedom_unlimited"):
+        known = _freedom_family_benefits(source_url, text, allow_reference, flex=False)
+    elif variant == ("chase", "chase_freedom_flex"):
+        known = _freedom_family_benefits(source_url, text, allow_reference, flex=True)
+    elif variant in builders:
+        known = builders[variant](source_url, text, allow_reference)
     else:
         return _dedupe(_structured_existing(items)) or None
 
