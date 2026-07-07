@@ -154,6 +154,7 @@ def _progress_for_target(
     balances: dict[str, float],
     partners: list[models.TransferPartner],
     provider: AwardProvider,
+    valuations: dict[str, float] | None = None,
 ) -> dict:
     result = provider.estimate_cost(db, target)
     programs = _programs(target.preferred_programs) or ([result.program] if result.program else [])
@@ -248,6 +249,42 @@ def _progress_for_target(
         bool(target.buy_points_cpp and realized_cpp and target.buy_points_cpp < realized_cpp)
     )
 
+    # Value verdict: is this redemption a GOOD use of the points, measured
+    # against the baseline valuation of the currency actually being spent
+    # (the transfer source when a transfer is needed, else the program held)?
+    spend_currency = None
+    if transfers:
+        spend_currency = transfers[0]["from_currency"]
+    elif direct:
+        spend_currency = direct[0]["program"]
+    elif selected_program:
+        spend_currency = selected_program
+    baseline_cpp = None
+    if valuations and spend_currency:
+        baseline_cpp = valuations.get(spend_currency.strip().lower())
+    value_verdict = None
+    verdict_note = None
+    if realized_cpp is not None and baseline_cpp:
+        ratio_vs_baseline = realized_cpp / baseline_cpp
+        if ratio_vs_baseline >= 1.25:
+            value_verdict = "excellent"
+            verdict_note = f"{realized_cpp:.2f} cpp vs {baseline_cpp:.2f} baseline — outsized value; book it."
+        elif ratio_vs_baseline >= 1.0:
+            value_verdict = "good"
+            verdict_note = f"{realized_cpp:.2f} cpp vs {baseline_cpp:.2f} baseline — solid use of points."
+        elif ratio_vs_baseline >= 0.8:
+            value_verdict = "fair"
+            verdict_note = (
+                f"{realized_cpp:.2f} cpp is below the {baseline_cpp:.2f} baseline — "
+                "compare cash price or another program first."
+            )
+        else:
+            value_verdict = "poor"
+            verdict_note = (
+                f"{realized_cpp:.2f} cpp burns points well below the {baseline_cpp:.2f} baseline — "
+                "pay cash or pick a better award."
+            )
+
     best_transfer = transfers[0] if transfers else None
     if more_needed and transfers:
         closing = next((t for t in transfers if t["converted_points"] >= more_needed), transfers[0])
@@ -295,6 +332,9 @@ def _progress_for_target(
         "award_result": result.__dict__,
         "award_options": award_options,
         "realized_cpp": realized_cpp,
+        "baseline_cpp": baseline_cpp,
+        "value_verdict": value_verdict,
+        "verdict_note": verdict_note,
         "buy_points_cpp": target.buy_points_cpp,
         "buy_points_worth_it": buy_points_worth_it,
         "guidance": guidance,
@@ -317,7 +357,10 @@ def build_redemption_plan(db: Session, provider: AwardProvider | None = None) ->
     targets = list(db.scalars(select(models.TargetRedemption)).all())
     targets.sort(key=lambda t: (t.priority if t.priority is not None else 999, t.id))
     partners = list(db.scalars(select(models.TransferPartner)).all())
-    progress = [_progress_for_target(db, t, balances, partners, provider) for t in targets]
+    progress = [
+        _progress_for_target(db, t, balances, partners, provider, valuations=vmap)
+        for t in targets
+    ]
     best_uses = sorted(progress, key=lambda p: (p["realized_cpp"] or 0, p["progress_pct"]), reverse=True)
     return {
         "mode": provider.mode,

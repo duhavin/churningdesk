@@ -4,6 +4,57 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-06 - Min-spend-first routing + redemption value verdicts
+
+**Status:** completed. **Scope:** `backend/logic/categories.py`, `backend/logic/redemption/engine.py`, Household + Redemption pages, tests. Prompted by Davin's "would this app give you everything you need to churn?" — two gaps found by walking the churn loop as a user.
+
+**Gaps found**
+
+1. The "what card to use where" guide had ZERO minimum-spend awareness. During
+   a min-spend window — the one time routing matters most, because a missed
+   deadline forfeits the entire welcome bonus — the guide kept recommending
+   category-multiplier cards.
+2. Redemption targets showed realized cpp with no judgment: nothing said
+   whether 1.1 cpp on a transfer was a fine use of Membership Rewards or
+   points-burning below their baseline value.
+
+**What Changed**
+
+1. `_min_spend_windows`: active unmet minimum-spend windows per held card
+   (remaining $, deadline, days left, required daily pace) with urgency tiers
+   (overdue / critical / tight / on_track; critical = <=14 days or >$150/day).
+   The category guide payload now ships `min_spend_windows`, and while any
+   window is open EVERY category row carries a `min_spend_override` naming
+   the bonus card ("Route ALL spend to X until the $N minimum is met — the
+   welcome bonus outvalues any category multiplier"). Completed and
+   bonus-earned cards never trigger it.
+2. Household "Card Use" tab: a "Minimum spend first" banner (per-window
+   remaining/days/pace + urgency chip) above the category grid; each category
+   card shows the override chip.
+3. Redemption value verdicts: `_progress_for_target` now takes the valuation
+   map and grades each trip's realized cpp against the baseline valuation of
+   the currency actually being spent (transfer source first, else held
+   program): excellent (>=1.25x) / good (>=1x) / fair (>=0.8x) / poor, with a
+   plain-language note ("2.50 cpp vs 1.70 baseline — outsized value; book
+   it." / "burns points well below the baseline — pay cash or pick a better
+   award."). Rendered as a chip beside Trip value with the note on hover.
+
+**Verification**
+
+- 150 backend tests pass (3 new: window math/urgency/exclusions, guide
+  override wiring, verdict grading incl. no-valuation safety).
+- Frontend typecheck + build clean (one JSX interpolation bug caught and
+  fixed during the pass).
+- Live E2E: /api/categories ships min_spend_windows (the household currently
+  has 1 active window, so the banner fires on real data immediately);
+  /api/redemption serves the verdict fields.
+
+**Rollback Notes**
+
+- `git revert`; no schema changes.
+
+---
+
 ## 2026-07-06 - Travel engine: transfer bonuses, multi-option awards, seeded routes
 
 **Status:** completed. **Scope:** transfer_partner schema (additive), redemption engine/providers wiring, new bonus-research module + endpoint, Redemption UI, seed module. Davin asked whether the travel engine handles transfer bonuses, current deals, and multi-option award results — gaps confirmed and closed.

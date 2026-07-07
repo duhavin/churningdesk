@@ -2,9 +2,15 @@
 
 Computes "what to use where" from cards the household actually holds. This is
 decision logic only: no scraping, no LLM, and no private data leaves the app.
+
+Min-spend priority: while a held card has an unmet minimum-spend requirement,
+EVERY category answer is overridden to route spend at that card — a welcome
+bonus is worth far more than any category multiplier, and a missed deadline
+forfeits it entirely.
 """
 from __future__ import annotations
 
+import datetime as dt
 import re
 from typing import TYPE_CHECKING
 
@@ -208,6 +214,48 @@ def _active_held_cards(
     return list(db.scalars(stmt).all())
 
 
+def _min_spend_windows(held: list, today: dt.date | None = None) -> list[dict]:
+    """Active minimum-spend windows, most urgent first."""
+    today = today or dt.date.today()
+    windows: list[dict] = []
+    for card in held:
+        requirement = card.min_spend_requirement or 0
+        if not requirement or card.min_spend_completed or card.welcome_bonus_earned:
+            continue
+        progress = card.min_spend_progress or 0
+        remaining = requirement - progress
+        if remaining <= 0:
+            continue
+        deadline = card.min_spend_deadline
+        days_left = (deadline - today).days if deadline else None
+        daily_needed = round(remaining / days_left, 2) if days_left and days_left > 0 else None
+        if days_left is not None and days_left <= 0:
+            urgency = "overdue"
+        elif days_left is not None and (days_left <= 14 or (daily_needed or 0) > 150):
+            urgency = "critical"
+        elif days_left is not None and days_left <= 30:
+            urgency = "tight"
+        else:
+            urgency = "on_track"
+        windows.append(
+            {
+                "user": card.user,
+                "held_card_id": card.id,
+                "display_name": product_display_name(card.issuer, card.product_name),
+                "requirement": requirement,
+                "progress": progress,
+                "remaining": round(remaining, 2),
+                "deadline": deadline.isoformat() if deadline else None,
+                "days_left": days_left,
+                "daily_needed": daily_needed,
+                "urgency": urgency,
+            }
+        )
+    order = {"overdue": 0, "critical": 1, "tight": 2, "on_track": 3}
+    windows.sort(key=lambda w: (order.get(w["urgency"], 9), w["days_left"] if w["days_left"] is not None else 10**6))
+    return windows
+
+
 def build_category_guide(
     db: Session,
     context: "DecisionContext | None" = None,
@@ -258,7 +306,29 @@ def build_category_guide(
             }
         )
 
-    return {"user": user, "scope": user or "household", "categories": rows}
+    windows = _min_spend_windows(held)
+    if windows:
+        top = windows[0]
+        pace = f" (~${top['daily_needed']:,.0f}/day)" if top.get("daily_needed") else ""
+        override_note = (
+            f"Route ALL spend to {top['display_name']} ({top['user']}) until the "
+            f"${top['remaining']:,.0f} minimum spend is met"
+            + (f" — {top['days_left']} days left{pace}" if top.get("days_left") is not None else "")
+            + ". The welcome bonus outvalues any category multiplier."
+        )
+        for row in rows:
+            row["min_spend_override"] = {
+                "display_name": top["display_name"],
+                "user": top["user"],
+                "urgency": top["urgency"],
+                "note": override_note,
+            }
+    return {
+        "user": user,
+        "scope": user or "household",
+        "categories": rows,
+        "min_spend_windows": windows,
+    }
 
 
 def build_user_category_coverage(

@@ -432,9 +432,38 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
           <EmptyState title="No category data" hint="Refresh card details to collect earn multipliers." />
         ) : (
           <div className="grid gap-2 md:grid-cols-5 lg:gap-3">
+            {(categoryGuide?.min_spend_windows ?? []).length > 0 && (
+              <div className="col-span-full rounded-lg border border-amber-300/40 bg-amber-300/10 px-3 py-2.5">
+                <div className="text-xs font-semibold uppercase tracking-wide text-amber-100">Minimum spend first</div>
+                {(categoryGuide.min_spend_windows as any[]).map((w) => (
+                  <div key={w.held_card_id} className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-amber-50">
+                    <span className="font-medium">{w.display_name}</span>
+                    <span className="text-amber-200/80">({w.user})</span>
+                    <span className="tabular-nums">{`$${Number(w.remaining).toLocaleString()} to go`}</span>
+                    {w.days_left != null && <span className="tabular-nums">{w.days_left} days left</span>}
+                    {w.daily_needed != null && <span className="tabular-nums">{`~$${Number(w.daily_needed).toLocaleString()}/day`}</span>}
+                    <span className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                      w.urgency === "critical" || w.urgency === "overdue"
+                        ? "border-rose-300/40 bg-rose-300/10 text-rose-100"
+                        : w.urgency === "tight"
+                          ? "border-amber-300/40 bg-amber-300/10 text-amber-100"
+                          : "border-emerald-300/30 bg-emerald-300/10 text-emerald-100"
+                    }`}>{w.urgency.replace("_", " ")}</span>
+                  </div>
+                ))}
+                <div className="mt-1.5 text-[11px] text-amber-200/80">
+                  Route every purchase to the card above until its minimum spend is done — the welcome bonus outvalues any category multiplier below.
+                </div>
+              </div>
+            )}
             {categoryRows.map((row) => (
               <div key={row.category} className="rounded-lg border border-ink-400/50 bg-ink-800/40 px-3 py-2.5 lg:px-4 lg:py-4">
                 <div className="text-xs font-semibold uppercase tracking-wide text-slate-400 lg:text-sm">{row.category}</div>
+                {row.min_spend_override && (
+                  <div className="mt-1 rounded border border-amber-300/30 bg-amber-300/5 px-1.5 py-0.5 text-[10px] text-amber-100">
+                    Min spend first: {row.min_spend_override.display_name}
+                  </div>
+                )}
                 {row.winner ? (
                   <>
                     <div className="mt-2 truncate text-sm font-medium text-slate-100 lg:text-base">{cardName(row.winner)}</div>

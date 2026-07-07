@@ -413,6 +413,22 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
                         <div className="text-slate-500">Trip value</div>
                         <div className="font-semibold tabular-nums text-slate-200">
                           {row.realized_cpp == null ? "Needs value" : `${row.realized_cpp.toFixed(2)} cpp`}
+                          {row.value_verdict && (
+                            <span
+                              title={row.verdict_note ?? undefined}
+                              className={`ml-1.5 rounded border px-1 py-px align-middle text-[10px] font-medium ${
+                                row.value_verdict === "excellent"
+                                  ? "border-emerald-300/40 bg-emerald-300/10 text-emerald-200"
+                                  : row.value_verdict === "good"
+                                    ? "border-cyan-accent/40 bg-cyan-accent/10 text-cyan-100"
+                                    : row.value_verdict === "fair"
+                                      ? "border-amber-300/40 bg-amber-300/10 text-amber-100"
+                                      : "border-rose-300/40 bg-rose-300/10 text-rose-100"
+                              }`}
+                            >
+                              {row.value_verdict}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div>

@@ -136,5 +136,103 @@ class BonusResearchParseTests(unittest.TestCase):
         self.assertEqual(_parse_suggestions("no deals today"), [])
 
 
+class MinSpendRoutingTests(unittest.TestCase):
+    """Min-spend windows override category routing (2026-07-06)."""
+
+    def _card(self, **kw):
+        import datetime as dt
+        from backend import config
+        defaults = dict(
+            user=config.USERS[0], issuer="Chase", product_name="Sapphire Preferred Card",
+            date_opened=dt.date.today() - dt.timedelta(days=30), status="Active",
+            ownership="Personal",
+        )
+        defaults.update(kw)
+        return models.HeldCard(**defaults)
+
+    def test_window_math_and_urgency(self):
+        from backend.logic.categories import _min_spend_windows
+        today = dt.date.today()
+        cards = [
+            self._card(min_spend_requirement=4000, min_spend_progress=1000,
+                       min_spend_deadline=today + dt.timedelta(days=10)),
+            self._card(user=__import__("backend.config", fromlist=["USERS"]).USERS[-1], product_name="Venture X Rewards Credit Card",
+                       issuer="Capital One",
+                       min_spend_requirement=4000, min_spend_progress=3800,
+                       min_spend_deadline=today + dt.timedelta(days=60)),
+            self._card(product_name="Freedom Flex", min_spend_requirement=500,
+                       min_spend_progress=500, min_spend_deadline=today + dt.timedelta(days=5)),
+            self._card(product_name="Gold Card", issuer="American Express",
+                       min_spend_requirement=6000, min_spend_progress=0,
+                       welcome_bonus_earned=True),
+        ]
+        windows = _min_spend_windows(cards, today=today)
+        # Completed ($500/$500) and bonus-earned cards never appear.
+        self.assertEqual(len(windows), 2)
+        # $3,000 in 10 days = $300/day → critical; it sorts first.
+        first = windows[0]
+        self.assertEqual(first["remaining"], 3000)
+        self.assertEqual(first["days_left"], 10)
+        self.assertEqual(first["daily_needed"], 300.0)
+        self.assertEqual(first["urgency"], "critical")
+        self.assertEqual(windows[1]["urgency"], "on_track")
+
+    def test_guide_carries_override(self):
+        from backend.logic.categories import build_category_guide
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        product = models.CardProduct(
+            issuer="Chase", product_name="Sapphire Preferred Card",
+            earn_multipliers={"dining": 3.0}, currency="Ultimate Rewards",
+        )
+        db.add(product)
+        db.commit()
+        db.add(self._card(product_id=product.id, min_spend_requirement=4000,
+                          min_spend_progress=500,
+                          min_spend_deadline=dt.date.today() + dt.timedelta(days=20)))
+        db.commit()
+        guide = build_category_guide(db)
+        self.assertEqual(len(guide["min_spend_windows"]), 1)
+        self.assertTrue(all("min_spend_override" in row for row in guide["categories"]))
+        note = guide["categories"][0]["min_spend_override"]["note"]
+        self.assertIn("Route ALL spend", note)
+
+
+class ValueVerdictTests(unittest.TestCase):
+    def _session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    def test_verdict_grades_against_baseline(self):
+        db = self._session()
+        db.add(models.AwardBenchmark(route="LAX-Tokyo", cabin_or_tier="Business",
+                                     program="Avios", est_cost_points=100000))
+        db.add(_partner(from_currency="Membership Rewards", to_program="Avios", ratio="1:1"))
+        db.add(models.TargetRedemption(
+            user="Household", name="Tokyo", origin="LAX", destination="Tokyo",
+            preferred_programs="Avios", target_value_cash=2500.0,
+        ))
+        db.commit()
+        target = db.query(models.TargetRedemption).first()
+        partners = list(db.query(models.TransferPartner))
+        balances = {"Membership Rewards": 120000.0}
+
+        # 2500/100000*100 = 2.5 cpp vs 1.7 baseline → excellent.
+        row = _progress_for_target(db, target, balances, partners, BenchmarkProvider(),
+                                   valuations={"membership rewards": 1.7})
+        self.assertEqual(row["value_verdict"], "excellent")
+        self.assertEqual(row["baseline_cpp"], 1.7)
+        # Same trip against a 3.5 cpp baseline → poor (2.5/3.5 < 0.8).
+        row = _progress_for_target(db, target, balances, partners, BenchmarkProvider(),
+                                   valuations={"membership rewards": 3.5})
+        self.assertEqual(row["value_verdict"], "poor")
+        # No valuation → no verdict, never a crash.
+        row = _progress_for_target(db, target, balances, partners, BenchmarkProvider())
+        self.assertIsNone(row["value_verdict"])
+
+
+
 if __name__ == "__main__":
     unittest.main()
