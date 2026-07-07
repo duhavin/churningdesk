@@ -1199,5 +1199,97 @@ class IngestionGuardTests(unittest.TestCase):
         return sessionmaker(bind=engine)()
 
 
+class AutoResolveTests(unittest.TestCase):
+    """System self-review of the proposed-change queue (2026-07-06)."""
+
+    def _session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from backend.db import Base
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    def _pending(self, db, product, field, value, **kw):
+        import json as _json
+        change = models.ProposedChange(
+            target_table="card_product", target_id=product.id, field=field,
+            old_value=_json.dumps(getattr(product, field, None)),
+            new_value=_json.dumps(value), status="pending", **kw,
+        )
+        db.add(change)
+        db.commit()
+        return change
+
+    def test_evidence_backed_offer_auto_approves(self):
+        import datetime as dt, json as _json
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Sapphire Preferred Card",
+                                     current_offer_points=60000)
+        db.add(product); db.commit()
+        db.add(models.IngestionEvidence(
+            product_id=product.id, field="current_offer_points",
+            value_json=_json.dumps(75000), source_url="https://www.chase.com/sapphire",
+            confidence=0.9, fetched_at=dt.datetime.now().isoformat(),
+        ))
+        db.commit()
+        change = self._pending(db, product, "current_offer_points", 75000,
+                               source_url="https://www.chase.com/sapphire")
+        report = validate.auto_resolve_pending_changes(db)
+        self.assertEqual(report["approved_count"], 1)
+        db.refresh(product)
+        self.assertEqual(product.current_offer_points, 75000)
+        self.assertEqual(change.status, "approved")
+
+    def test_implausible_value_auto_rejects(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Freedom Flex")
+        db.add(product); db.commit()
+        change = self._pending(db, product, "annual_fee", 99999)
+        report = validate.auto_resolve_pending_changes(db)
+        self.assertEqual(report["rejected_count"], 1)
+        self.assertEqual(change.status, "rejected")
+
+    def test_peak_below_current_auto_rejects(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Amex", product_name="Platinum Card",
+                                     current_offer_points=150000)
+        db.add(product); db.commit()
+        change = self._pending(db, product, "peak_offer_points", 80000)
+        report = validate.auto_resolve_pending_changes(db)
+        self.assertEqual(report["rejected_count"], 1)
+        self.assertIn("below the current offer", change.review_note)
+
+    def test_peak_without_trusted_evidence_stays_pending(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Amex", product_name="Platinum Card",
+                                     current_offer_points=80000)
+        db.add(product); db.commit()
+        change = self._pending(db, product, "peak_offer_points", 175000)
+        report = validate.auto_resolve_pending_changes(db)
+        self.assertEqual(report["pending_count"], 1)
+        self.assertEqual(change.status, "pending")
+
+    def test_peak_with_trusted_evidence_auto_approves(self):
+        import datetime as dt, json as _json
+        db = self._session()
+        product = models.CardProduct(issuer="Amex", product_name="Platinum Card",
+                                     current_offer_points=80000)
+        db.add(product); db.commit()
+        db.add(models.IngestionEvidence(
+            product_id=product.id, field="peak_offer_points",
+            value_json=_json.dumps(175000),
+            source_url="https://www.doctorofcredit.com/amex-platinum-175k",
+            confidence=0.85, fetched_at=dt.datetime.now().isoformat(),
+        ))
+        db.commit()
+        change = self._pending(db, product, "peak_offer_points", 175000)
+        report = validate.auto_resolve_pending_changes(db)
+        self.assertEqual(report["approved_count"], 1)
+        db.refresh(product)
+        self.assertEqual(product.peak_offer_points, 175000)
+
+
+
 if __name__ == "__main__":
     unittest.main()

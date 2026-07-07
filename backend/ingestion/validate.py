@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from urllib.parse import urlparse
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -1062,6 +1063,184 @@ def apply_extraction(
 # --- Review-queue actions ---------------------------------------------------
 def _coerce(field: str, value):
     return value  # values are stored JSON-typed, so json.loads already gives the right type
+
+
+PEAK_TRUSTED_HOSTS = (
+    "doctorofcredit.com",
+    "frequentmiler.com",
+    "uscreditcardguide.com",
+    "thepointsguy.com",
+)
+
+_PLAUSIBLE_RANGES = {
+    "annual_fee": (0, 2500),
+    "current_offer_points": (1000, 500000),
+    "current_offer_cash": (25, 3000),
+    "current_offer_min_spend": (0, 50000),
+    "current_offer_window_months": (1, 12),
+    "peak_offer_points": (1000, 500000),
+    "targeted_peak_offer_points": (1000, 500000),
+    "referral_bonus_points": (1000, 100000),
+    "referral_bonus_cash": (25, 1000),
+    "first_year_credit_value": (0, 3000),
+}
+
+
+def _plausible(field: str, value) -> bool:
+    bounds = _PLAUSIBLE_RANGES.get(field)
+    if bounds is None:
+        return True
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    low, high = bounds
+    return low <= number <= high
+
+
+def _evidence_backs_value(
+    db: Session,
+    product_id: int,
+    field: str,
+    serialized_value: str,
+    *,
+    trusted_hosts: tuple[str, ...] | None = None,
+    max_age_days: int = 60,
+) -> bool:
+    """True when a recent ingestion_evidence row records this exact value for
+    the field (or a scan alias), optionally restricted to trusted hosts."""
+    aliases = set(FIELD_EVIDENCE_ALIASES.get(field, (field,))) | {field}
+    rows = db.scalars(
+        select(models.IngestionEvidence).where(
+            models.IngestionEvidence.product_id == product_id,
+            models.IngestionEvidence.field.in_(sorted(aliases)),
+        )
+    ).all()
+    cutoff = _utcnow() - dt.timedelta(days=max_age_days)
+    for row in rows:
+        if row.value_json != serialized_value:
+            continue
+        if (row.confidence or 0) < 0.6:
+            continue
+        created = row.created_at or cutoff
+        if created < cutoff:
+            continue
+        if trusted_hosts:
+            host = (urlparse(row.source_url or "").hostname or "").lower().removeprefix("www.")
+            issuer_official = source_quality.is_official_issuer_host(host) if hasattr(source_quality, "is_official_issuer_host") else False
+            if not (host.endswith(trusted_hosts) or issuer_official):
+                continue
+        return True
+    return False
+
+
+def auto_resolve_pending_changes(db: Session, *, commit: bool = True) -> dict:
+    """The system reviews its own queue so the household never has to.
+
+    Approval requires the same things a careful human checks: recent recorded
+    evidence for the exact value, plausible magnitude, and for PEAK fields a
+    peak-trusted or official source plus peak >= the known current offer.
+    Structured text fields (benefits/uses/multipliers/downgrades) approve on
+    the strength of the hardened normalization gates that already run at
+    apply time. Anything that fails a hard check is rejected with a note;
+    genuinely unverifiable rows stay pending (rare).
+    """
+    pending = db.scalars(
+        select(models.ProposedChange).where(
+            models.ProposedChange.target_table == "card_product",
+            models.ProposedChange.status == "pending",
+        )
+    ).all()
+    approved: list[dict] = []
+    rejected: list[dict] = []
+    kept: list[dict] = []
+    for change in pending:
+        product = db.get(models.CardProduct, change.target_id)
+        if product is None:
+            change.status = "rejected"
+            change.review_note = "Product no longer exists."
+            rejected.append({"id": change.id, "field": change.field, "reason": "orphaned"})
+            continue
+        field = change.field
+        try:
+            value = json.loads(change.new_value) if change.new_value is not None else None
+        except (TypeError, json.JSONDecodeError):
+            reject_change(db, change)
+            change.review_note = "Unparseable proposed value."
+            rejected.append({"id": change.id, "field": field, "reason": "unparseable"})
+            continue
+
+        display = product_display_name_safe(product)
+        # 1. Hard plausibility gate.
+        if not _plausible(field, value) and field in _PLAUSIBLE_RANGES:
+            reject_change(db, change)
+            change.review_note = f"Auto-rejected: {value!r} outside plausible range for {field}."
+            rejected.append({"id": change.id, "product": display, "field": field, "reason": "implausible"})
+            continue
+
+        # 2. Peak accuracy rules (the reference scale must be right).
+        if field in PEAK_FIELDS:
+            current = product.current_offer_effective or product.current_offer_points or 0
+            if current and isinstance(value, (int, float)) and value < current:
+                reject_change(db, change)
+                change.review_note = (
+                    f"Auto-rejected: proposed peak {value} is below the current offer {current}."
+                )
+                rejected.append({"id": change.id, "product": display, "field": field, "reason": "peak_below_current"})
+                continue
+            if _evidence_backs_value(db, product.id, field, change.new_value, trusted_hosts=PEAK_TRUSTED_HOSTS):
+                approve_change(db, change)
+                approved.append({"id": change.id, "product": display, "field": field, "basis": "trusted_peak_evidence"})
+            else:
+                kept.append({"id": change.id, "product": display, "field": field, "reason": "peak_needs_trusted_evidence"})
+            continue
+
+        # 3. Offer/fee/referral numbers: recent recorded evidence for the value.
+        if field in OFFER_FIELDS or field in ("annual_fee", "first_year_credit_value", "peak_offer_min_spend"):
+            if _evidence_backs_value(db, product.id, field, change.new_value):
+                approve_change(db, change)
+                approved.append({"id": change.id, "product": display, "field": field, "basis": "recorded_evidence"})
+            else:
+                kept.append({"id": change.id, "product": display, "field": field, "reason": "no_matching_evidence"})
+            continue
+
+        # 4. Structured text fields: the hardened gates ARE the verification.
+        if field in SUPPLEMENTAL_WRITE_FIELDS or field in (
+            "peak_offer_source",
+            "peak_offer_date",
+            "targeted_peak_offer_source",
+            "targeted_peak_offer_date",
+            "currency",
+        ):
+            approve_change(db, change)
+            approved.append({"id": change.id, "product": display, "field": field, "basis": "normalization_gates"})
+            continue
+
+        # 5. Eligibility and anything else unrecognized stays for the rare
+        # human look — these change recommendation legality.
+        kept.append({"id": change.id, "product": display, "field": field, "reason": "manual_domain"})
+
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return {
+        "approved": approved,
+        "rejected": rejected,
+        "pending": kept,
+        "approved_count": len(approved),
+        "rejected_count": len(rejected),
+        "pending_count": len(kept),
+    }
+
+
+def product_display_name_safe(product: models.CardProduct) -> str:
+    try:
+        from ..product_identity import product_display_name
+
+        return product_display_name(product.issuer, product.product_name) or product.product_name
+    except Exception:
+        return product.product_name
 
 
 def approve_change(db: Session, change: models.ProposedChange) -> None:

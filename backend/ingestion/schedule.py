@@ -1825,7 +1825,23 @@ def run_refresh(
         "valuations_added": valuations,
         "review_cleanup": review_cleanup,
         "source_cleanup": source_cleanup,
+        # Dedicated peak convergence (2026-07-06): every one-tap refresh also
+        # tries to fill a few missing historic peaks through the quote-verified
+        # single-card resolver, so the reference scale converges on its own.
+        "peak_research": _run_peak_research_safely(db) if use_web_search and config.WEB_SEARCH_ENABLED else None,
+        # System self-review (2026-07-06): settle the queue every run so the
+        # household never has to approve routine, evidence-backed changes.
+        "auto_review": validate.auto_resolve_pending_changes(db),
     }
+
+
+def _run_peak_research_safely(db: Session, limit: int = 6) -> dict | None:
+    try:
+        from .peak_research import research_missing_peaks
+
+        return research_missing_peaks(db, limit=limit)
+    except Exception as exc:  # a peak pass must never sink the refresh
+        return {"error": str(exc)}
 
 
 def backfill_valuations(db: Session) -> int:

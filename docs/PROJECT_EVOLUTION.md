@@ -4,6 +4,69 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-06 - One-tap refresh, system self-review, quote-verified peak resolver + live data runs
+
+**Status:** completed; three live ingestion runs executed with Davin's approval. **Scope:** ingestion (schedule/extract/validate + new peak_research module), run router, TopNav, tests.
+
+**Davin's asks**
+
+1/2: merge "Refresh offers"/"Deep refresh" into ONE tap with deep as automatic
+fallback; converge toward no card missing info. 3: no manual review/calibration
+decisions — the system verifies itself. 4: historic peaks (the timing reference
+scale) must be accurate; the system previously failed to find them.
+
+**What Changed**
+
+1. One-tap refresh: TopNav now has a single "Refresh" (static/cache first;
+   missing-info cards auto-escalate to rendered + web research, cap 12).
+2. System self-review: `validate.auto_resolve_pending_changes` settles the
+   proposed-change queue after every refresh — numeric fields need recorded
+   evidence for the exact value + plausibility bounds; peaks additionally need
+   a peak-trusted/official source and peak >= current; normalized text fields
+   approve on the hardened gates; junk auto-rejects with a note; only
+   eligibility-rule changes still wait for a human. Endpoint:
+   POST /api/proposed-changes/auto-resolve.
+3. Batch-extraction fragility fixed (the actual reason peak/referral research
+   kept failing): (a) truncated batch JSON now salvages complete rows instead
+   of losing the whole batch (`_salvage_batch_rows`), (b) fallback token caps
+   raised, (c) `evidence_snippets` shape coercion no longer explodes on
+   list-shaped output.
+4. NEW quote-verified peak resolver (`ingestion/peak_research.py`): one card
+   per structured extraction; the verbatim quote must contain the number; the
+   cited source must be peak-trusted (DoC/FM/USCCG/TPG) or the issuer; peaks
+   below the current offer or implausible are refused; applied through the
+   normal evidence pipeline. Endpoint POST /api/run/peak-research, and every
+   one-tap refresh now runs a capped (6) peak pass automatically.
+
+**Live runs (approved)**
+
+- Run 1 exposed the batch JSON failure (whole batch lost). Fixed as above.
+- Run 2 (fixed parser, cached searches): committed 16 field updates,
+  referral_bonus_points 0 -> 2 cards, offers 30 -> 38, fees -> 40.
+- Targeted research pass: 9 changes auto-approved on recorded evidence, 0 bad.
+- Peak resolver pass: 4 peaks filled WITH verbatim trusted-source quotes
+  (Amex Platinum 175k, Amex Business Gold 200k, Venture Business 150k, Citi
+  Double Cash 20k TYP); 13 correctly refused with reasons
+  (not stated in sources / untrusted source / below current / implausible) —
+  the system now refuses to invent peaks rather than guessing.
+- Final census: 43 cards — offers 39, fees 40, peaks 26 -> 30, referrals 2.
+  Remaining gaps are cards whose cached research text doesn't explicitly
+  state an all-time high; each future refresh keeps converging via the
+  built-in peak pass and fresh searches after cache expiry.
+- Pre-run DB backup: `data/wewards.pre-refresh-20260706.db` (local only).
+
+**Verification**
+
+- 155 backend tests pass (5 new auto-resolve tests: evidence-backed approve,
+  implausible reject, peak-below-current reject, untrusted-peak stays pending,
+  trusted-peak approves). Frontend typecheck + build clean.
+
+**Rollback Notes**
+
+- Code: `git revert`. Data: restore the pre-refresh backup (local).
+
+---
+
 ## 2026-07-06 - Min-spend-first routing + redemption value verdicts
 
 **Status:** completed. **Scope:** `backend/logic/categories.py`, `backend/logic/redemption/engine.py`, Household + Redemption pages, tests. Prompted by Davin's "would this app give you everything you need to churn?" — two gaps found by walking the churn loop as a user.

@@ -235,6 +235,12 @@ def cleanup_proposed_changes(db: Session = Depends(get_db)):
     return validate.cleanup_bad_pending_changes(db)
 
 
+@router.post("/proposed-changes/auto-resolve")
+def auto_resolve_changes(db: Session = Depends(get_db)):
+    """System self-review: evidence + plausibility gated, peaks need trusted sources."""
+    return validate.auto_resolve_pending_changes(db)
+
+
 @router.post("/proposed-changes/{change_id}/decision")
 def decide_change(
     change_id: int,

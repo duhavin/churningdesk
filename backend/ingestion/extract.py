@@ -86,16 +86,63 @@ def _coerce_offer_scan_batch_payload(payload: Any) -> Any:
         evidence = row.get("evidence_snippets")
         if isinstance(evidence, dict):
             row["evidence_snippets"] = {
-                str(key): value
+                str(key): [str(v) for v in value]
                 if isinstance(value, list)
                 else ([] if value is None else [str(value)])
                 for key, value in evidence.items()
             }
+        elif isinstance(evidence, list):
+            # Some responses emit a flat snippet list — keep the text, drop
+            # the field mapping rather than losing the whole batch.
+            row["evidence_snippets"] = {"unmapped": [str(v) for v in evidence]}
+        elif evidence is not None:
+            row["evidence_snippets"] = {}
     return payload
 
 
+def _salvage_batch_rows(raw: str) -> list[dict]:
+    """Recover complete row objects from truncated/imperfect batch JSON.
+
+    Long batches can hit max_tokens mid-document; losing the WHOLE batch to
+    one broken trailing object starves peaks/referrals of data. Decode row
+    objects one at a time and keep everything that parsed cleanly.
+    """
+    start = raw.find('"rows"')
+    bracket = raw.find("[", start) if start >= 0 else -1
+    if bracket < 0:
+        return []
+    decoder = json.JSONDecoder()
+    rows: list[dict] = []
+    i, n = bracket + 1, len(raw)
+    while i < n:
+        while i < n and raw[i] in " \t\r\n,":
+            i += 1
+        if i >= n or raw[i] == "]":
+            break
+        if raw[i] != "{":
+            break
+        try:
+            obj, end = decoder.raw_decode(raw, i)
+        except json.JSONDecodeError:
+            break  # truncated final object — keep the complete ones
+        if isinstance(obj, dict):
+            rows.append(obj)
+        i = end
+    return rows
+
+
 def _parse_offer_scan_batch_json(text: str) -> list[OfferScanRow]:
-    payload = _coerce_offer_scan_batch_payload(_parse_json_object(text))
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    try:
+        payload = _coerce_offer_scan_batch_payload(_parse_json_object(raw))
+    except json.JSONDecodeError:
+        salvaged = _salvage_batch_rows(raw)
+        if not salvaged:
+            raise
+        payload = _coerce_offer_scan_batch_payload({"rows": salvaged})
     result = OfferScanBatchResult.model_validate(payload)
     return [normalize_offer_scan_row(row) for row in result.rows]
 
@@ -782,7 +829,7 @@ def extract_offers_batch(cards: list[OfferSnippetInput]) -> list[OfferScanRow]:
     try:
         resp = client.messages.parse(
             model=config.ANTHROPIC_MODEL,
-            max_tokens=min(4000, 600 + len(cards) * 450),
+            max_tokens=min(8000, 600 + len(cards) * 700),
             messages=[{"role": "user", "content": prompt}],
             output_format=OfferScanBatchResult,
         )
@@ -798,7 +845,7 @@ def extract_offers_batch(cards: list[OfferSnippetInput]) -> list[OfferScanRow]:
             try:
                 fallback = client.messages.create(
                     model=config.ANTHROPIC_MODEL,
-                    max_tokens=min(4000, 600 + len(cards) * 450),
+                    max_tokens=min(8000, 600 + len(cards) * 700),
                     messages=[{"role": "user", "content": fallback_prompt}],
                 )
             except anthropic.APIError as fallback_exc:

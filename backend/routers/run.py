@@ -207,3 +207,12 @@ def run_refresh(payload: schemas.RefreshRequest, db: Session = Depends(get_db)):
 @router.get("/refresh/status")
 def refresh_status():
     return _job_snapshot()
+
+
+@router.post("/run/peak-research")
+def run_peak_research(limit: int | None = None, db: Session = Depends(get_db)):
+    """Resolve missing historic peaks: one card per structured extraction,
+    verbatim-quote verified, trusted-source gated."""
+    from ..ingestion.peak_research import research_missing_peaks
+
+    return research_missing_peaks(db, limit=limit)

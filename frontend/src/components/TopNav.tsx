@@ -195,21 +195,20 @@ function TopControls({
               }}
             />
             <RunItem
-              label="Refresh offers"
-              hint="Static/cache first, also refreshes missing valuations"
+              label="Refresh"
+              hint="Static/cache first; cards still missing info escalate to rendered + web search automatically. Review auto-verifies."
               disabled={!llmOk || running}
               onClick={() => {
                 setRunOpen(false);
-                onRefresh({ limit: null, only_stale: true, include_incomplete: true, use_web_search: false, refresh_valuations: true });
-              }}
-            />
-            <RunItem
-              label="Deep refresh"
-              hint="Force-retry incomplete cards, render known pages, then capped web fallback"
-              disabled={!llmOk || !webOk || running}
-              onClick={() => {
-                setRunOpen(false);
-                onRefresh({ limit: null, only_stale: true, include_incomplete: true, force: true, use_rendered_fallback: true, use_web_search: true, web_fallback_limit: 8, refresh_valuations: true });
+                onRefresh({
+                  limit: null,
+                  only_stale: true,
+                  include_incomplete: true,
+                  use_rendered_fallback: true,
+                  use_web_search: true,
+                  web_fallback_limit: 12,
+                  refresh_valuations: true,
+                });
               }}
             />
             <RunItem
