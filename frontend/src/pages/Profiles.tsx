@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Sector, Tooltip } from "recharts";
 import { api, type CardReference, type CatalogEntry, type HeldCard } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, Card, EmptyState, SectionTitle, Spinner, cardName, fmtMoney, fmtNum } from "../components/ui";
+import { Banner, Card, EmptyState, SectionTitle, Spinner, cardName, fmtDate, fmtMoney, fmtNum } from "../components/ui";
 import { CardForm } from "../components/CardForm";
 import { buildCurrencyOptions } from "../lib/currencies";
 import { five24CardStatusLabel } from "../lib/five24";
@@ -673,6 +673,14 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
     }
   };
 
+  // Coverage/insurance perks live here in card details, not in the tracker.
+  const protectionsByProduct = useMemo(
+    () => new Map(catalog.map((row) => [row.id, row.card_protections ?? []])),
+    [catalog],
+  );
+  const coverageFor = (c: HeldCard) =>
+    c.product_id != null ? protectionsByProduct.get(c.product_id) ?? [] : [];
+
   if (loading && !profile) return <Spinner />;
 
   const f24 = profile?.five_24;
@@ -690,13 +698,6 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const activeProfileCards = cards.filter((card) => !isArchivedCard(card));
   const archivedProfileCards = cards.filter(isArchivedCard);
   const visibleProfileCards = showArchivedCards ? archivedProfileCards : activeProfileCards;
-  // Coverage/insurance perks live here in card details, not in the tracker.
-  const protectionsByProduct = useMemo(
-    () => new Map(catalog.map((row) => [row.id, row.card_protections ?? []])),
-    [catalog],
-  );
-  const coverageFor = (c: HeldCard) =>
-    c.product_id != null ? protectionsByProduct.get(c.product_id) ?? [] : [];
 
   return (
     <div className="space-y-6">
@@ -997,8 +998,8 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
                       <span>Last 4 {c.last4 ? `..${c.last4}` : "none"}</span>
-                      <span>Opened {c.date_opened}</span>
-                      <span>Renewal {c.renewal_date ?? "none"}</span>
+                      <span>Opened {fmtDate(c.date_opened)}</span>
+                      <span>Renewal {c.renewal_date ? fmtDate(c.renewal_date) : "none"}</span>
                       <span>{five24CardStatusLabel(c)}</span>
                     </div>
                     {expanded && (
@@ -1053,8 +1054,8 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
                         <div className="text-[11px] text-slate-500">{c.issuer} - {c.ownership}</div>
                         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
                           <span>Last 4 {c.last4 ? `..${c.last4}` : "none"}</span>
-                          <span>Opened {c.date_opened}</span>
-                          <span>Renewal {c.renewal_date ?? "none"}</span>
+                          <span>Opened {fmtDate(c.date_opened)}</span>
+                          <span>Renewal {c.renewal_date ? fmtDate(c.renewal_date) : "none"}</span>
                           <span>Limit {fmtMoney(c.credit_limit)}</span>
                           <span>{five24CardStatusLabel(c)}</span>
                         </div>

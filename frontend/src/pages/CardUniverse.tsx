@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type CatalogHealthResponse, type ProposedChange, type RunStatus } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, Card, SectionTitle, Spinner, cardName } from "../components/ui";
+import { Banner, Card, SectionTitle, Spinner, cardName, issuerCardLabel } from "../components/ui";
 
 function changeField(change: ProposedChange) {
   return change.field_label || String(change.field || "").replace(/_/g, " ");
@@ -254,7 +254,7 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
           <Card className="soft-scroll flex max-h-[220px] flex-wrap gap-2 pr-1">
             {discovered.map((d) => (
               <span key={d.id} className="chip bg-ink-500 text-slate-300">
-                {d.issuer} {cardName(d)}
+                {issuerCardLabel(d.issuer, cardName(d))}
                 <button
                   className="ml-2 text-cyan-accent hover:underline"
                   onClick={async () => {
@@ -299,7 +299,7 @@ export function CardUniverse({ user, bump, flash }: { user: string; bump: number
 
       {/* Valuations */}
       <div>
-        <SectionTitle title="Point valuations (cpp)" subtitle="effective = override ?? scraped. Override is yours." />
+        <SectionTitle title="Point valuations (cpp)" subtitle="Your override wins when set; otherwise the scraped value applies." />
         {valuations.length === 0 ? (
           <Card className="text-sm text-slate-500">No valuations yet — Refresh offers backfills them, or add manually below.</Card>
         ) : (
@@ -405,7 +405,7 @@ function ListManager({
           {items.map((it) => (
             <li key={it.id} className="flex items-start justify-between gap-3 py-1.5 text-sm">
               <span className="min-w-0 break-words text-slate-200">
-                {it.issuer} {cardName(it)}
+                {issuerCardLabel(it.issuer, cardName(it))}
                 {it.priority && <span className="ml-2 chip bg-cyan-accent/15 text-cyan-accent">priority</span>}
                 {it.reason && <span className="ml-2 text-[11px] text-slate-500">({it.reason})</span>}
               </span>

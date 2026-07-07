@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type CardReference, type CatalogEntry, type HeldCard } from "../lib/api";
 import type { Flash } from "../App";
-import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtMoney, fmtNum } from "../components/ui";
+import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtDate, fmtMoney, fmtNum } from "../components/ui";
 
 const SEV: Record<string, string> = {
   high: "border-rose-500/40 bg-rose-500/10 text-rose-200",
@@ -208,8 +208,8 @@ export function Dashboard({
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 md:gap-4">
         <Stat label="Active cards" value={String(activeCards.length)} />
         <Stat
-          label="Fees vs benefit value"
-          value={household?.wallet ? `${fmtMoney(household.wallet.total_annual_fees)} / ${fmtMoney(household.wallet.net_annual_value)} net` : fmtMoney(annualFees)}
+          label={household?.wallet ? `Net value after ${fmtMoney(household.wallet.total_annual_fees)} fees` : "Annual fees"}
+          value={household?.wallet ? fmtMoney(household.wallet.net_annual_value) : fmtMoney(annualFees)}
           accent={household?.wallet ? (household.wallet.net_annual_value >= 0 ? "good" : "warn") : undefined}
         />
         <Stat label="Needs attention" value={String(attention.length)} accent={attention.length ? "warn" : "good"} />
@@ -234,8 +234,8 @@ export function Dashboard({
                     <span className="shrink-0 text-xs text-slate-300">{h.status}</span>
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
-                    <span>Opened {h.date_opened}</span>
-                    <span>Renewal {h.renewal_date ?? "none"}</span>
+                    <span>Opened {fmtDate(h.date_opened)}</span>
+                    <span>Renewal {h.renewal_date ? fmtDate(h.renewal_date) : "none"}</span>
                     <span>Fee {h.annual_fee ? fmtMoney(h.annual_fee) : "none"}</span>
                   </div>
                   <div className="line-clamp-1 text-[11px] leading-tight text-slate-300">
@@ -267,9 +267,9 @@ export function Dashboard({
                           {h.user} | {h.issuer} | {h.ownership}
                         </div>
                       </td>
-                      <td className="td text-slate-300">{h.date_opened}</td>
-                      <td className="td text-slate-300">
-                        {h.renewal_date ?? "-"}
+                      <td className="td whitespace-nowrap text-slate-300">{fmtDate(h.date_opened)}</td>
+                      <td className="td whitespace-nowrap text-slate-300">
+                        {h.renewal_date ? fmtDate(h.renewal_date) : "-"}
                         {h.annual_fee ? <div className="text-[11px] text-slate-500">{fmtMoney(h.annual_fee)}</div> : null}
                       </td>
                       <td className="td text-slate-300">{bonusText(h)}</td>
@@ -573,10 +573,10 @@ export function Dashboard({
 function bonusText(card: HeldCard) {
   if (card.welcome_bonus_earned) {
     const earned = card.bonus_points_earned ? `${fmtNum(card.bonus_points_earned)} ${card.bonus_currency ?? "pts"}` : "earned";
-    return card.bonus_earned_date ? `${earned} | ${card.bonus_earned_date}` : earned;
+    return card.bonus_earned_date ? `${earned} | ${fmtDate(card.bonus_earned_date)}` : earned;
   }
   if (card.min_spend_requirement) {
-    return `${fmtMoney(card.min_spend_progress ?? 0)} / ${fmtMoney(card.min_spend_requirement)}${card.min_spend_deadline ? ` | due ${card.min_spend_deadline}` : ""}`;
+    return `${fmtMoney(card.min_spend_progress ?? 0)} / ${fmtMoney(card.min_spend_requirement)}${card.min_spend_deadline ? ` | due ${fmtDate(card.min_spend_deadline)}` : ""}`;
   }
   return "not earned";
 }

@@ -1,4 +1,5 @@
 import type { HeldCard } from "./api";
+import { fmtDate } from "../components/ui";
 
 function addMonthsIso(value: string | null | undefined, months: number): string | null {
   if (!value) return null;
@@ -15,5 +16,5 @@ export function five24CardStatusLabel(card: HeldCard) {
   const dropDate = addMonthsIso(card.date_opened, 24);
   if (!dropDate) return "5/24: needs open date";
   const today = new Date().toISOString().slice(0, 10);
-  return dropDate > today ? `5/24: counts until ${dropDate}` : `5/24: aged out ${dropDate}`;
+  return dropDate > today ? `5/24: counts until ${fmtDate(dropDate)}` : `5/24: aged out ${fmtDate(dropDate)}`;
 }

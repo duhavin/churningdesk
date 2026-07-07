@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { Flash } from "../App";
-import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtMoney, fmtNum } from "../components/ui";
+import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtDate, fmtMoney, fmtNum } from "../components/ui";
 
 const BENEFIT_CATEGORIES = [
   { id: "dining", label: "Dining" },
@@ -383,8 +383,8 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                         <span className="shrink-0 text-xs text-slate-300">{card.status}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
-                        <span>Opened {card.date_opened ?? "none"}</span>
-                        <span>Renewal {card.renewal_date ?? "none"}</span>
+                        <span>Opened {card.date_opened ? fmtDate(card.date_opened) : "none"}</span>
+                        <span>Renewal {card.renewal_date ? fmtDate(card.renewal_date) : "none"}</span>
                         <span>Fee {card.annual_fee ? fmtMoney(card.annual_fee) : "none"}</span>
                       </div>
                     </div>
@@ -406,9 +406,9 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                           <div className="text-slate-100">{cardName(card)}</div>
                           <div className="text-[11px] text-slate-500">{card.issuer}</div>
                         </td>
-                        <td className="td text-slate-300">{card.date_opened ?? "-"}</td>
-                        <td className="td text-slate-300">
-                          {card.renewal_date ?? "-"}
+                        <td className="td whitespace-nowrap text-slate-300">{card.date_opened ? fmtDate(card.date_opened) : "-"}</td>
+                        <td className="td whitespace-nowrap text-slate-300">
+                          {card.renewal_date ? fmtDate(card.renewal_date) : "-"}
                           {card.annual_fee ? <div className="text-[11px] text-slate-500">{fmtMoney(card.annual_fee)}</div> : null}
                         </td>
                         <td className="td text-slate-300">{card.status}</td>

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, type TransferBonusSuggestion } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, Card, EmptyState, Field, SectionTitle, Spinner, fmtMoney, fmtNum } from "../components/ui";
+import { Banner, Card, EmptyState, Field, SectionTitle, Spinner, fmtDate, fmtMoney, fmtNum } from "../components/ui";
 
 type TargetForm = {
   user: string;
@@ -346,6 +346,18 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
   const progressRows: any[] = data?.progress ?? [];
   const balances: any[] = data?.balances ?? [];
   const partners: any[] = data?.transfer_partners ?? [];
+  const partnerGroups: [string, any[]][] = (() => {
+    const grouped = new Map<string, any[]>();
+    for (const partner of partners) {
+      const key = String(partner.from_currency || "Other");
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(partner);
+    }
+    for (const routes of grouped.values()) {
+      routes.sort((a, b) => String(a.to_program).localeCompare(String(b.to_program)));
+    }
+    return Array.from(grouped.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  })();
   const currencyOptions = Array.from(
     new Set([...balances.map((row) => String(row.currency || "")).filter(Boolean), ...COMMON_CURRENCIES]),
   ).sort();
@@ -719,26 +731,48 @@ export function Redemption({ bump, flash }: { user: string; bump: number; flash:
           {partners.length > 0 && (
             <Card className="p-0">
               <div className="border-b border-ink-400/60 px-3 py-2 text-sm font-semibold text-slate-100 sm:px-4">
-                Transfer Partners
+                Transfer Partners <span className="ml-1 text-xs font-normal text-slate-500">{partners.length} routes</span>
               </div>
-              <div className="space-y-2 p-3 sm:p-4">
-                {partners.map((partner) => (
-                  <div key={partner.id} className="rounded-lg border border-ink-400/50 bg-ink-800/40 px-3 py-2">
-                    <div className="text-sm text-slate-100">{partner.from_currency} to {partner.to_program}</div>
-                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
-                      <span>{partner.ratio || "1:1"}</span>
-                      {partner.bonus_active && partner.bonus_pct ? (
-                        <span className="rounded border border-amber-300/30 bg-amber-300/10 px-1.5 py-0.5 text-[10px] text-amber-100">
-                          +{partner.bonus_pct}%{partner.bonus_end_date ? ` thru ${partner.bonus_end_date}` : ""}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <button className="btn-ghost py-1 text-xs" onClick={() => editPartner(partner)}>Edit</button>
-                      <button className="btn-danger py-1 text-xs" onClick={() => deletePartner(partner)}>Delete</button>
-                    </div>
-                  </div>
-                ))}
+              <div className="space-y-1 p-2 sm:p-3">
+                {partnerGroups.map(([program, routes]) => {
+                  const activeBonuses = routes.filter((p) => p.bonus_active && p.bonus_pct).length;
+                  return (
+                    <details key={program} className="group rounded-lg border border-ink-400/50 bg-ink-800/40" open={activeBonuses > 0}>
+                      <summary className="flex cursor-pointer select-none flex-wrap items-center gap-2 px-3 py-2 text-sm text-slate-100">
+                        <span className="text-xs text-slate-500 transition-transform group-open:rotate-90">&rsaquo;</span>
+                        <span className="font-medium">{program}</span>
+                        <span className="text-xs text-slate-500">{routes.length} partners</span>
+                        {activeBonuses > 0 && (
+                          <span className="rounded border border-amber-300/30 bg-amber-300/10 px-1.5 py-0.5 text-[10px] text-amber-100">
+                            {activeBonuses} bonus{activeBonuses > 1 ? "es" : ""} live
+                          </span>
+                        )}
+                      </summary>
+                      <div className="divide-y divide-ink-500/50 border-t border-ink-400/40">
+                        {routes.map((partner) => (
+                          <div key={partner.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-xs">
+                            <span className="text-slate-200">{partner.to_program}</span>
+                            <span className="text-slate-500">{partner.ratio || "1:1"}</span>
+                            {partner.bonus_active && partner.bonus_pct ? (
+                              <span className="rounded border border-amber-300/30 bg-amber-300/10 px-1.5 py-0.5 text-[10px] text-amber-100">
+                                +{partner.bonus_pct}%{partner.bonus_end_date ? ` thru ${fmtDate(partner.bonus_end_date)}` : ""}
+                              </span>
+                            ) : null}
+                            <span className="ml-auto flex shrink-0 gap-1">
+                              <button className="btn-ghost px-2 py-0.5 text-[11px]" onClick={() => editPartner(partner)}>Edit</button>
+                              <button
+                                className="px-2 py-0.5 text-[11px] text-slate-500 transition-colors hover:text-rose-300"
+                                onClick={() => deletePartner(partner)}
+                              >
+                                Remove
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  );
+                })}
               </div>
             </Card>
           )}

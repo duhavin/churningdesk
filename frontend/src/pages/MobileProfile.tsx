@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type CardReference, type CatalogEntry, type HeldCard, type ProfileSummary } from "../lib/api";
 import type { Flash } from "../App";
-import { Card, EmptyState, Modal, Spinner, cardName, fmtMoney, fmtNum } from "../components/ui";
+import { Card, EmptyState, Modal, Spinner, cardName, fmtDate, fmtMoney, fmtNum } from "../components/ui";
 import { CardForm } from "../components/CardForm";
 import { buildCurrencyOptions } from "../lib/currencies";
 import { five24CardStatusLabel } from "../lib/five24";
@@ -23,7 +23,7 @@ function categoryUseLabel(item: any) {
 
 function shortDate(value: string | null | undefined) {
   if (!value) return "No date";
-  return value.length >= 10 ? value.slice(5, 10) : value;
+  return fmtDate(value);
 }
 
 function isArchivedCard(card: HeldCard) {

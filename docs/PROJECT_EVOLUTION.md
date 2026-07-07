@@ -4,6 +4,60 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-07 - UI/UX polish pass: Profiles crash fix, date/money formatting, transfer-partner grouping
+
+**Status:** completed. **Scope:** frontend only (`components/ui.tsx`, `lib/five24.ts`, pages Dashboard/Household/Profiles/MobileProfile/Redemption/CardUniverse). Prompted by Davin: "Run a ui/ux pass through on WEwards... smooth and polished, sleek and professional."
+
+**Found during the pass (desktop + mobile screenshot review of every tab)**
+
+- CRITICAL: Profiles page white-screened the whole app (minified React error
+  #310). The `protectionsByProduct` `useMemo` (added in the protection-split
+  work) sat below the `if (loading && !profile) return <Spinner />` early
+  return, so hook order changed between renders. Hook moved above the return.
+- Redemption's Transfer Partners rendered 49 flat cards, each with a large
+  red Delete button (~5,600px of wall on desktop, worse on mobile).
+- Negative money rendered as `$-1,012` (Dashboard tile, Card Plan values) and
+  the mobile fees tile truncated to `$-1,01...`.
+- "Newly discovered" chips stuttered: "Chase Chase Amazon Prime", "Barclays
+  Wyndham Earner Business Business" (issuer prefixed onto names that already
+  contain it).
+- Dates were inconsistent (ISO `2027-10-27` wrapping mid-date in Dashboard/
+  Household tables vs "Jul 7, 2026" in Card Plan) and mobile My Cards showed
+  ambiguous month-day-only dates ("Opened 10-27").
+- Card Universe cpp subtitle used code jargon ("override ?? scraped").
+
+**What Changed**
+
+1. `ui.tsx`: `fmtMoney` now renders negatives as `-$1,012`; new shared
+   `fmtDate` ("Oct 27, 2027") and `issuerCardLabel` (collapses repeated
+   words when combining issuer + product name).
+2. Dashboard: fees tile is now "Net value after $X fees" with the net as the
+   headline (fits mobile); table dates humanized + `whitespace-nowrap`;
+   bonus/min-spend dates humanized.
+3. Household/Profiles/MobileProfile/`five24.ts`: all card dates (opened,
+   renewal, 5/24 drop) through `fmtDate`.
+4. Redemption: transfer partners grouped per source program in collapsible
+   sections (auto-open when a bonus is live) with compact rows; Delete
+   demoted to a quiet "Remove" text button. Page height ~5,600px -> ~900px.
+5. Card Universe: discovery chips through `issuerCardLabel`; cpp subtitle in
+   plain language.
+
+**Verification**
+
+- Frontend typecheck + build clean; re-shot Dashboard, Redemption, Card
+  Universe, and mobile views to confirm each fix rendered. A suspected
+  "80.000" thousands-separator bug was checked against the local DB and
+  ruled out (clean integer; screenshot artifact).
+- Two leftover one-shot scripts deleted (`scripts/_ui_screenshots.py`,
+  `scripts/_patch_minspend_verdict.py`); post-browser-run check found no
+  stray Chrome profile folders in project/workspace roots.
+
+**Rollback Notes**
+
+- `git revert`; frontend-only, no schema or API changes.
+
+---
+
 ## 2026-07-06 - Anti-bloat pass: issuer velocity rules, first-year guard, wallet efficiency
 
 **Status:** completed. **Scope:** `backend/logic/{eligibility,pipeline,household}.py`, Dashboard tile, tests. Prompted by Davin: "is it truly optimized ... while not over bloating current card rotation?"

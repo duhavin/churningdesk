@@ -171,7 +171,26 @@ function numericValue(n: number | string | null | undefined): number | null {
 export function fmtMoney(n: number | string | null | undefined): string {
   const value = numericValue(n);
   if (value === null) return "—";
-  return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
+export function fmtDate(value: string | null | undefined): string {
+  if (!value) return "—";
+  const parsed = value.includes("T") ? new Date(value) : new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(parsed);
+}
+
+/** Combine issuer + product name without stutter ("Chase Chase Amazon Prime"). */
+export function issuerCardLabel(issuer: string | null | undefined, name: string): string {
+  const words = `${issuer ?? ""} ${name ?? ""}`.trim().split(/\s+/);
+  const out: string[] = [];
+  for (const word of words) {
+    if (out.length && out[out.length - 1].toLowerCase() === word.toLowerCase()) continue;
+    out.push(word);
+  }
+  return out.join(" ").replace(/^American Express Amex /i, "Amex ");
 }
 
 export function fmtNum(n: number | string | null | undefined): string {
