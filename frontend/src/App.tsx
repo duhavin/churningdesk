@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { TopNav, type Tab } from "./components/TopNav";
 import { api, type RefreshJob, type RunStatus } from "./lib/api";
-import { Dashboard } from "./pages/Dashboard";
-import { CardPlan } from "./pages/CardPlan";
-import { Profiles } from "./pages/Profiles";
-import { Pipeline } from "./pages/Pipeline";
-import { Household } from "./pages/Household";
-import { Redemption } from "./pages/Redemption";
-import { CardUniverse } from "./pages/CardUniverse";
-import { MobileProfile } from "./pages/MobileProfile";
-import { MobileBenefits } from "./pages/MobileBenefits";
+
+// Route pages are code-split: the shell + welcome/profile gate ship in the
+// initial bundle; each page chunk loads on first visit. Named exports are
+// re-mapped to default for React.lazy.
+const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+const CardPlan = lazy(() => import("./pages/CardPlan").then((m) => ({ default: m.CardPlan })));
+const Profiles = lazy(() => import("./pages/Profiles").then((m) => ({ default: m.Profiles })));
+const Pipeline = lazy(() => import("./pages/Pipeline").then((m) => ({ default: m.Pipeline })));
+const Household = lazy(() => import("./pages/Household").then((m) => ({ default: m.Household })));
+const Redemption = lazy(() => import("./pages/Redemption").then((m) => ({ default: m.Redemption })));
+const CardUniverse = lazy(() => import("./pages/CardUniverse").then((m) => ({ default: m.CardUniverse })));
+const MobileProfile = lazy(() => import("./pages/MobileProfile").then((m) => ({ default: m.MobileProfile })));
+const MobileBenefits = lazy(() => import("./pages/MobileBenefits").then((m) => ({ default: m.MobileBenefits })));
 
 export type Flash = (kind: "info" | "warn" | "error", msg: string) => void;
 
@@ -209,6 +213,14 @@ function MobileSegment<T extends string>({
 
 function MobilePanel({ children }: { children: ReactNode }) {
   return <div className="space-y-4">{children}</div>;
+}
+
+function PageLoading() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center" aria-busy="true" aria-live="polite">
+      <span className="h-6 w-6 animate-spin rounded-full border-2 border-ink-400 border-t-cyan-accent" />
+    </div>
+  );
 }
 
 function WelcomeScreen({
@@ -660,8 +672,10 @@ export default function App() {
       />
 
       <main className="mx-auto max-w-7xl px-3 pb-24 pt-4 sm:px-4 sm:py-6 md:pb-6">
-        <div className="mobile-shell md:hidden">{mobilePage()}</div>
-        <div className="hidden md:block">{desktopPage()}</div>
+        <Suspense fallback={<PageLoading />}>
+          <div className="mobile-shell md:hidden">{mobilePage()}</div>
+          <div className="hidden md:block">{desktopPage()}</div>
+        </Suspense>
       </main>
 
       {user && <MobileBottomNav active={showMobileConfig ? null : mobileTab} onSelect={selectMobileTab} />}

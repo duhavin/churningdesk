@@ -4,6 +4,58 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-08 - Performance pass: frontend code-splitting + wallet context reuse
+
+**Status:** completed. **Scope:** `frontend/src/App.tsx`, `backend/logic/household.py`. Prompted by Davin: "any enhancements or improvements... optimization to increase performance?" (report-only audit first, then approved implement).
+
+**Found (audit, read-only)**
+
+- The frontend shipped as a single ~726 kB bundle (gzip ~199 kB): `App.tsx`
+  statically imported all nine route pages, so every visit downloaded the
+  whole app including the chart-heavy Profiles page.
+- `_wallet_efficiency` (household.py) ran two fresh full-table scans
+  (`select(HeldCard)`, `select(CardProduct)`) on every household build even
+  though `build_household` had already loaded both into the `DecisionContext`.
+
+**What changed**
+
+1. `App.tsx`: route pages converted to `React.lazy` + one `Suspense`
+   boundary with a lightweight spinner fallback. Shell/welcome gate stay in
+   the initial chunk; each page loads on first visit.
+2. `_wallet_efficiency(context, pipelines)` now reads held cards from
+   `context.held_by_user` and resolves each card's product via
+   `context.product_for_card` (id→key→variant) instead of re-querying. Zero
+   extra DB round-trips. Minor accuracy improvement: a held card whose exact
+   `product_id` was deduped away now resolves to its representative product
+   rather than reading as $0 benefit (fees unchanged — fee still prefers
+   `card.annual_fee`).
+
+**Deliberately NOT changed**
+
+- A composed single dashboard endpoint was scoped and rejected: on closer
+  read the per-user `/dashboard` endpoints are lightweight (direct held-card
+  queries + `elig.five24`, no `DecisionContext`), so a page load builds
+  context ~2× (household + scored-catalog), not the 3× first estimated. The
+  refactor's payoff (save ~1 context build) did not justify the regression
+  risk on the decision path. Left as a future option.
+
+**Result**
+
+- Initial JS bundle: 726 kB → **174 kB** (gzip 199 kB → 55 kB). Pages split
+  into per-route chunks (Profiles 394 kB now lazy).
+
+**Verification**
+
+- `npm run build` clean (chunks emitted as expected); 159 backend tests +
+  24 subtests pass (wallet path exercised by household tests).
+
+**Rollback Notes**
+
+- `git revert`; frontend-only + one backend function signature change, no
+  schema or API changes.
+
+---
+
 ## 2026-07-07 - UI/UX polish pass: Profiles crash fix, date/money formatting, transfer-partner grouping
 
 **Status:** completed. **Scope:** frontend only (`components/ui.tsx`, `lib/five24.ts`, pages Dashboard/Household/Profiles/MobileProfile/Redemption/CardUniverse). Prompted by Davin: "Run a ui/ux pass through on WEwards... smooth and polished, sleek and professional."

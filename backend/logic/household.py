@@ -404,34 +404,38 @@ def build_household(db: Session) -> dict:
         "referrals": referrals,
         "moves": ordered[:config.HOUSEHOLD_MOVES_LIMIT],
         "quarter_apps": total_quarter_apps,
-        "wallet": _wallet_efficiency(db, pipelines),
+        "wallet": _wallet_efficiency(context, pipelines),
         "at_pace_cap": at_pace_cap,
         "max_apps_per_quarter": config.MAX_APPS_PER_QUARTER,
     }
 
 
-def _wallet_efficiency(db, pipelines: dict) -> dict:
+def _wallet_efficiency(context: DecisionContext, pipelines: dict) -> dict:
     """Household fee-vs-benefit balance so card bloat is visible at a glance.
 
     net = annualized benefit value (precise, structured-first) minus annual
     fees over ACTIVE held cards for both users. Cards with negative net are
     the downgrade/cancel shortlist — subject to the first-year guard.
+
+    Reads held cards and products from the already-loaded DecisionContext
+    (no fresh DB scans) and resolves each card's product via the context's
+    id→key→variant resolver, so a held card whose exact product_id was deduped
+    away still maps to its representative product rather than reading as $0.
     """
     from .pipeline import _annual_benefit_value
-    from sqlalchemy import select
 
     held = [
         card
-        for card in db.scalars(select(models.HeldCard)).all()
+        for cards in context.held_by_user.values()
+        for card in cards
         if card.user in config.USERS
         and (card.status or "").lower() not in ("closed", "cancelled", "canceled")
     ]
-    products = {p.id: p for p in db.scalars(select(models.CardProduct)).all()}
     total_fees = 0.0
     total_benefits = 0.0
     negative: list[dict] = []
     for card in held:
-        product = products.get(card.product_id) if card.product_id else None
+        product = context.product_for_card(card)
         fee = float(card.annual_fee or (product.annual_fee if product else 0) or 0)
         benefit_value = _annual_benefit_value(product)
         total_fees += fee
