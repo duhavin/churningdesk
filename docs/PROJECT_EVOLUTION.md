@@ -4,6 +4,47 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-09 - Dashboard alignment, tab-scoped household actions, neutral Needs Data rows
+
+**Status:** implemented and verified. **Scope:** frontend presentation only;
+no API contract, decision logic, card data, ingestion, database, or private
+household state changed.
+
+**What changed**
+
+1. Dashboard desktop action panels now use the same 2:1 column geometry as
+   Cards / Needs Attention. Next Applications spans the wide column and
+   Referral Actions matches the Needs Attention column width.
+2. Both action panels now share the same header, list padding, scroll height,
+   and first-row start position. Sub-XL layouts use the existing compact
+   Next / Referrals segmented view instead of compressing the desktop grid.
+3. Household's Best Household Applications and Recommended Referral Actions
+   render only on the Snapshot internal tab. Benefits and Card Use now end
+   after their own content.
+4. Pipeline Needs Data rows now use the same neutral card surface and radius
+   as the surrounding pipeline items. The amber NEEDS DATA status badge still
+   communicates the state without tinting the entire card brown.
+
+**Verification**
+
+- Frontend typecheck and production build passed.
+- Live browser sweep passed at 1600x950, 768x1024, and 390x844: no horizontal
+  overflow, console errors, or page errors on Dashboard, Household, or
+  Pipeline.
+- Desktop measurements confirmed zero top-position difference between the two
+  action panels and their first rows, and zero width difference between
+  Referral Actions and Needs Attention.
+- Household recommendation counts were 2 on Snapshot and 0 on Benefits/Card
+  Use at every viewport. Pipeline Needs Data resolved to a neutral 8px-radius
+  surface with no amber background class.
+- Browser evidence was captured locally with all text redacted so private
+  household/card details were not written into verification artifacts.
+
+**Rollback notes**
+
+- Revert this entry's three frontend page changes. No data or schema rollback
+  is required.
+
 ## 2026-07-09 - Dedicated frontend port 5177
 
 **Status:** implemented and verified. **Scope:** local run configuration and

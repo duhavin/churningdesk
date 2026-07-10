@@ -354,7 +354,7 @@ function NeedsDataRow({ card, variant = "needs_data" }: { card: PipelineCard; va
       className={`rounded-lg border px-3 py-2 ${
         isLadder
           ? "pipeline-ladder-row border-violet-400/25 bg-violet-400/5"
-          : "pipeline-needs-data-row border-amber-500/30 bg-amber-950/10"
+          : "pipeline-needs-data-row border-ink-400/60 bg-ink-700/60"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
@@ -369,7 +369,7 @@ function NeedsDataRow({ card, variant = "needs_data" }: { card: PipelineCard; va
           {card.is_exceptional && <RareBadge />}
         </div>
       </div>
-      <div className={`line-clamp-2 mt-1 text-[11px] leading-tight ${isLadder ? "pipeline-ladder-reason text-slate-400" : "text-amber-100/80"}`}>
+      <div className={`line-clamp-2 mt-1 text-[11px] leading-tight ${isLadder ? "pipeline-ladder-reason text-slate-400" : "text-slate-400"}`}>
         {shortText(card.reason)}
       </div>
     </div>

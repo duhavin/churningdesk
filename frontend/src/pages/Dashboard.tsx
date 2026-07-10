@@ -315,7 +315,7 @@ export function Dashboard({
         </div>
       </div>
 
-      <div className="lg:hidden">
+      <div className="xl:hidden">
         <Card className="p-2">
           <div className="grid grid-cols-2 gap-1 rounded-lg bg-ink-900 p-1 text-xs">
             {mobileActionTabs.map((tab) => (
@@ -454,8 +454,8 @@ export function Dashboard({
         </Card>
       </div>
 
-      <div className="hidden min-w-0 gap-6 lg:grid lg:grid-cols-2">
-        <Card className="min-w-0 p-0">
+      <div className="hidden min-w-0 gap-6 xl:grid xl:grid-cols-3">
+        <Card className="min-w-0 p-0 xl:col-span-2">
           <div className="px-4 pt-4 pb-2 font-semibold text-slate-100">Next Applications</div>
           {moves.length === 0 ? (
             <div className="px-4 pb-4 text-sm text-slate-500">No APPLY NOW or WATCH applications are ranked right now.</div>
@@ -515,12 +515,12 @@ export function Dashboard({
           )}
         </Card>
 
-        <Card className="min-w-0">
-          <div className="mb-2 font-semibold text-slate-100">Referral Actions</div>
+        <Card className="min-w-0 p-0">
+          <div className="px-4 pb-2 pt-4 font-semibold text-slate-100">Referral Actions</div>
           {referrals.length === 0 ? (
-            <p className="text-sm text-slate-500">No referral route is currently ranked as APPLY NOW or WATCH.</p>
+            <p className="px-4 pb-4 text-sm text-slate-500">No referral route is currently ranked as APPLY NOW or WATCH.</p>
           ) : (
-            <div className="soft-scroll max-h-[320px] space-y-2 pr-1">
+            <div className="soft-scroll max-h-[360px] space-y-2 px-3 pb-3 pr-1">
               {referrals.map((r: any, i: number) => {
                 const key = `desktop-referral-${i}-${r.id}`;
                 const isOpen = Boolean(expandedAction[key]);

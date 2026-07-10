@@ -539,6 +539,8 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
       </Card>
       )}
 
+      {overviewTab === "snapshot" && (
+      <>
       {/* Best next applications (both applicants) */}
       <Card className="order-2 hidden p-0 !bg-ink-900/60 md:block">
         <div className="px-4 pt-4 pb-2 font-semibold text-slate-100">Best Household Applications</div>
@@ -672,6 +674,8 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
           </div>
         )}
       </Card>
+      </>
+      )}
     </div>
   );
 }
