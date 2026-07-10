@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 
-const port = Number(process.env.WEWARDS_FRONTEND_PORT || 5176);
+const port = Number(process.env.WEWARDS_FRONTEND_PORT || 5177);
 const host = process.env.WEWARDS_FRONTEND_HOST || "127.0.0.1";
 const apiTarget = new URL(process.env.WEWARDS_API_TARGET || "http://127.0.0.1:8000");
 const root = path.resolve(process.cwd(), "dist");

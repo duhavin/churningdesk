@@ -4,6 +4,38 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-09 - Dedicated frontend port 5177
+
+**Status:** implemented and verified. **Scope:** local run configuration and
+documentation only; no decision logic, database, private data, or ingestion
+behavior changed.
+
+**What changed**
+
+1. Moved the frontend/static proxy from `5176` to dedicated port `5177`; kept
+   the FastAPI backend on its existing dedicated port `8000`.
+2. Updated the restart script, static server default, Vite/preview strict-port
+   settings, backend localhost CORS origins, README, usage guide, and current
+   state.
+3. Made restart log filenames derive from the configured ports. The restart
+   script no longer manages `5176`, which remains reserved for Slavocity.
+4. Restarted WEwards on `5177/8000` and removed the one stale pre-migration
+   frontend listener from `5176`.
+
+**Verification**
+
+- Frontend typecheck and production build passed.
+- `backend/main.py` compiled, `serve-dist.mjs` passed `node --check`, and the
+  restart PowerShell script parsed without syntax errors.
+- Backend health on `8000` and the frontend proxy on `5177` returned HTTP 200.
+- Active WEwards config/docs contain no remaining `5173` or `5176` references;
+  older ledger entries retain historical port facts.
+
+**Rollback notes**
+
+- Revert this entry's config/docs files only after assigning another unused
+  port in the workspace registry. Do not restore `5176` while Slavocity owns it.
+
 ## 2026-07-08 - Performance pass: frontend code-splitting + wallet context reuse
 
 **Status:** completed. **Scope:** `frontend/src/App.tsx`, `backend/logic/household.py`. Prompted by Davin: "any enhancements or improvements... optimization to increase performance?" (report-only audit first, then approved implement).

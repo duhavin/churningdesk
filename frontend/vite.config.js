@@ -4,6 +4,8 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   server: {
+    port: 5177,
+    strictPort: true,
     allowedHosts: [".trycloudflare.com"],
     proxy: {
       "/api": {
@@ -11,5 +13,9 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  preview: {
+    port: 5177,
+    strictPort: true,
   },
 });

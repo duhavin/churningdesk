@@ -1,6 +1,6 @@
 # WEwards Current State
 
-Last updated: 2026-07-06 -07:00
+Last updated: 2026-07-09 -07:00
 
 ## Project Mode
 
@@ -130,7 +130,7 @@ Frontend/stable local:
 Dedicated ports:
 
 - Backend API: `8000`
-- Frontend/static proxy: `5176`
+- Frontend/static proxy: `5177`
 
 Backend verification:
 

@@ -9,7 +9,7 @@ $Root = Resolve-Path (Join-Path $ScriptDir "..")
 $FrontendDir = Join-Path $Root "frontend"
 $Python = Join-Path $Root ".venv-win\Scripts\python.exe"
 $BackendPort = 8000
-$FrontendPort = 5176
+$FrontendPort = 5177
 $OldBackendPorts = @(8017)
 $ManagedPorts = @($BackendPort, $FrontendPort) + $OldBackendPorts
 $Stopped = New-Object System.Collections.Generic.HashSet[int]
@@ -212,10 +212,10 @@ if (-not (Test-Path $Python)) {
 
 $Node = (Get-Command node.exe -ErrorAction Stop).Source
 $Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-$BackendOut = Join-Path $Root "logs\backend-8000.out.log"
-$BackendErr = Join-Path $Root "logs\backend-8000.err.log"
-$FrontendOut = Join-Path $Root "logs\frontend-5176.out.log"
-$FrontendErr = Join-Path $Root "logs\frontend-5176.err.log"
+$BackendOut = Join-Path $Root "logs\backend-$BackendPort.out.log"
+$BackendErr = Join-Path $Root "logs\backend-$BackendPort.err.log"
+$FrontendOut = Join-Path $Root "logs\frontend-$FrontendPort.out.log"
+$FrontendErr = Join-Path $Root "logs\frontend-$FrontendPort.err.log"
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "logs") | Out-Null
 
 Write-Step "starting backend on $BackendPort"

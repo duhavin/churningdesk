@@ -69,7 +69,7 @@ cd frontend
 npm run dev
 ```
 
-Default frontend port is `5176`; API requests proxy to `127.0.0.1:8000`.
+Default frontend port is `5177`; API requests proxy to `127.0.0.1:8000`.
 
 ## Fresh-Slate Data Behavior
 

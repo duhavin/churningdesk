@@ -21,19 +21,19 @@ cd frontend
 npm run dev
 ```
 
-Open `http://127.0.0.1:5176`.
+Open `http://127.0.0.1:5177`.
 
 The frontend run script serves the built `frontend/dist` app through
 `frontend/serve-dist.mjs` and proxies `/api` to `8000`. Run `npm run build`
 after frontend edits, or use `scripts\restart-wewards.ps1`, which builds before
-starting `5176`.
+starting `5177`.
 
 ## Stable Local Restart
 
 WEwards should always run with:
 
 - Backend API on `http://127.0.0.1:8000`
-- Frontend/Vite on `http://127.0.0.1:5176`
+- Frontend/Vite on `http://127.0.0.1:5177`
 
 Use the restart script instead of manually starting extra ports:
 
@@ -44,12 +44,12 @@ Use the restart script instead of manually starting extra ports:
 The script:
 
 - Stops WEwards Python/Node processes.
-- Clears stale listeners on `8000`, `5176`, and the old fallback `8017`.
+- Clears stale listeners on `8000`, `5177`, and the old backend fallback `8017`.
 - Handles orphaned Windows multiprocessing workers that can keep serving stale
   uvicorn code after their parent PID disappears.
 - Builds the frontend, then starts exactly one backend on `8000` and one
-  frontend static/proxy server on `5176`.
-- Verifies `5176/api/run/status` and `5176/api/catalog/duplicates` return JSON.
+  frontend static/proxy server on `5177`.
+- Verifies `5177/api/run/status` and `5177/api/catalog/duplicates` return JSON.
 
 If process or socket inspection is denied, rerun PowerShell as Administrator.
 Do not start WEwards on alternate ports unless this file is intentionally
