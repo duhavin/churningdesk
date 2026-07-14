@@ -1,9 +1,13 @@
 // Thin typed client over the FastAPI backend. All paths are relative; the Vite
 // dev server proxies /api to the configured backend, and production serves both.
 
+// Follows the Vite base (subpath hosting, e.g. /wewards); "/" base yields the
+// original root-relative paths.
+const API_ROOT = import.meta.env.BASE_URL.replace(/\/+$/, "");
+
 function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
-  return path.startsWith("/") ? path : `/${path}`;
+  return `${API_ROOT}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 async function req<T>(path: string, options: RequestInit = {}): Promise<T> {

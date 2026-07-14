@@ -4,6 +4,39 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-14 - Docker packaging and tailnet subpath hosting support
+
+**Status:** implemented and verified live. **Scope:** build/deploy packaging
+and frontend URL-base plumbing only; no decision logic, API contract, data
+model, or private household state changed.
+
+**What changed**
+
+1. `frontend/build.mjs` honors `VITE_BASE_PATH` (default `/`) and
+   `frontend/src/lib/api.ts` prefixes API calls with the built base URL, so
+   the app can be hosted under a subpath (e.g. `/wewards`). With the default
+   base, local serve-dist and root deploys behave exactly as before.
+2. Added `frontend/src/vite-env.d.ts` so `import.meta.env` typechecks.
+3. Added `Dockerfile` (node build stage with `VITE_BASE_PATH=/wewards/`,
+   python 3.12 runtime; uvicorn serves API + built SPA) and `.dockerignore`
+   (excludes `.env`, `data/`, venvs, node_modules — no secrets or private
+   data in images).
+4. The hosted instance runs in the workspace finance Docker stack behind a
+   Tailscale sidecar (tailnet-only, not public). Env is injected at runtime
+   from the local `.env` by compose; `CRAWL4AI_ENABLED=false` in the
+   container (no Playwright browsers in the image); `data/` is bind-mounted
+   and shared with local runs.
+
+**Verification**
+
+- `npm run typecheck` passed; container image built clean.
+- Live over tailnet: SPA loads with subpath assets, `/api/health` reports
+  llm/crypto available, `/api/users` returns the household users.
+
+**Rollback:** remove `Dockerfile`/`.dockerignore`/`vite-env.d.ts` and revert
+`build.mjs` + `api.ts`; defaults keep current behavior identical, so the
+frontend changes are safe to keep even if hosting is abandoned.
+
 ## 2026-07-09 - Dashboard alignment, tab-scoped household actions, neutral Needs Data rows
 
 **Status:** implemented and verified. **Scope:** frontend presentation only;
