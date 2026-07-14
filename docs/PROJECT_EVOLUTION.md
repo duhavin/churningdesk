@@ -23,9 +23,10 @@ model, or private household state changed.
    data in images).
 4. The hosted instance runs in the workspace finance Docker stack behind a
    Tailscale sidecar (tailnet-only, not public). Env is injected at runtime
-   from the local `.env` by compose; `CRAWL4AI_ENABLED=false` in the
-   container (no Playwright browsers in the image); `data/` is bind-mounted
-   and shared with local runs.
+   from the local `.env` by compose; `data/` is bind-mounted and shared with
+   local runs. Same-day follow-up: Chromium baked into the image
+   (`playwright install --with-deps chromium`) so crawl4ai scraping is
+   enabled in the container (config default, state under `data/crawl4ai`).
 
 **Verification**
 

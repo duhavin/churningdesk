@@ -13,6 +13,8 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Chromium for crawl4ai offer scraping (--with-deps pulls the system libs).
+RUN playwright install --with-deps chromium
 COPY backend/ ./backend/
 COPY --from=web /web/dist ./frontend/dist
 # CWD must stay /app: DATABASE_URL default is sqlite:///data/wewards.db
