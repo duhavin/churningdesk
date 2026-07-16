@@ -6,7 +6,7 @@ WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
-ENV VITE_BASE_PATH=/wewards/
+ENV VITE_BASE_PATH=/
 RUN node build.mjs
 
 FROM python:3.12-slim

@@ -396,7 +396,7 @@ To rollback any individual change: `git revert` the relevant commit, or manually
 ## Verification
 
 ```bash
-cd "C:\Users\Davin\Desktop\Coding Projects\WEwards"
+cd "C:\Users\P16\Desktop\Coding Projects\WEwards"
 .venv-win\Scripts\python.exe -m pytest backend/tests/ -q
 ```
 
