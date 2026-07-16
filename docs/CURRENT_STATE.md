@@ -1,6 +1,15 @@
 # WEwards Current State
 
-Last updated: 2026-07-09 -07:00
+Last updated: 2026-07-16 -07:00
+
+Workspace hosting (2026-07-16 additive note): WEwards has a per-app tailnet
+hosting stack at `toolbench/hosting/wewards/`. Remote access is LIVE at both
+`https://wewards.tail26040e.ts.net` and the browser-trusted private name
+`https://wewards.dwagon.app` (served by the `dwagon.app` domain gateway,
+`toolbench/hosting/domain-gateway/`). Verified 2026-07-16: HTTPS returns HTTP
+200 serving the real dashboard (title `WEwards — Household Rewards Dashboard`).
+This note is additive only. (The `Dockerfile`/hosting changes previously
+flagged by context-status were reconciled into Built State on 2026-07-16.)
 
 ## Project Mode
 
@@ -101,7 +110,24 @@ Currently built:
   bonuses were never researched before — 0/43 populated), free-text sanitation
   in the apply path, and a `sanitize-text` catalog sweep (endpoint + Card
   Universe button) that was run locally: junk re-scan now flags 0/43 cards.
-  133 backend tests pass; frontend typecheck/build clean.
+- 2026-07-14: Docker packaging; the app also runs as a tailnet-only container
+  (`wewards-wewards-1` behind a Tailscale sidecar) with `.env` injected at
+  runtime and `data/` bind-mounted (shared with local runs). Chromium is baked
+  in so Crawl4AI works in the container. Redeploy = rebuild via the workspace
+  `/docker` flow so the container matches the working tree.
+- 2026-07-16 audit + fix pass (fully-autonomous doctrine): re-bonus windows
+  enforced on the apply path (closed cards count; shared rule table across
+  apply + requeue); points-first scoring (`POINTS_FIRST`, default on) with
+  honest cash-only tracking/filtering and bundle valuation (no targeted+cash
+  double-count); high-value below-peak offers surface as WAIT; super-family
+  referrals labeled honestly; household/pipeline/referral ranking unified per
+  DECISION_RULES; autonomous review verification (official/independent-source
+  corroboration, self-expiring proposals, no human queue); strict host
+  matching; plausibility + unit gates on all commit paths; referral evidence
+  parity; fetch-failure honesty (stale-if-error age cap, no false
+  `last_verified`); peak-research rotation/cooldown (additive column
+  `peak_research_attempted_at`); discovery memory-mode eligibility dropped.
+  227 backend tests pass; frontend typecheck/build clean.
 
 Known active risks:
 

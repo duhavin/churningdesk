@@ -292,6 +292,18 @@ def _needs_review_reason(e: dict) -> str:
         detail = ", ".join(labels.get(issue, issue.replace("_", " ")) for issue in issues[:3])
         return f"Excluded from apply queue: {detail}. Review or fill these public fields before ranking."
     if e["status"] == scoring.LOW_PRIORITY:
+        # cash_only + honest valuation land with the scoring change; read
+        # defensively so this works before and after that change ships.
+        if e.get("cash_only"):
+            return (
+                f"Cash-only offer (~${(e.get('offer_value') or 0):.0f} tracked) — "
+                "filtered by points-first preference."
+            )
+        if (e.get("offer_value") or 0) >= config.MIN_WATCH_VALUE:
+            return (
+                "Offer is well below its known peak — waiting for a better window. "
+                f"Value ${e['offer_value']:.0f}, peak_score {e['peak_score']}."
+            )
         return (
             "Excluded from apply queue: offer value is below the current value floor. "
             f"Value ${e['offer_value']:.0f}, peak_score {e['peak_score']}."
@@ -593,22 +605,6 @@ def _held_value_signal(
     if card.welcome_bonus_earned:
         score += 5
 
-    # Adjust for actual benefit credit utilization when usage data is available
-    if benefit_usages:
-        trackable = [u for u in benefit_usages if getattr(u, "amount_available", None)]
-        if trackable:
-            try:
-                avg_util = sum(
-                    min((u.amount_used or 0) / u.amount_available, 1.0)
-                    for u in trackable
-                ) / len(trackable)
-                if avg_util >= 0.6:
-                    score += 10
-                elif avg_util == 0:
-                    score -= 8
-            except (TypeError, ZeroDivisionError, MissingKeyError):
-                pass
-
     drivers: list[str] = []
     if benefit_dollar_value > 0:
         drivers.append(f"~${benefit_dollar_value:.0f} annual benefit value")
@@ -620,6 +616,44 @@ def _held_value_signal(
         drivers.append("downgrade path available")
     if annual_fee:
         drivers.append(f"${annual_fee:.0f} annual fee considered")
+
+    # Adjust for actual benefit credit utilization when usage data is available.
+    # Only each benefit's MOST RECENT period counts, so an old unused year does
+    # not permanently drag a card the user now redeems consistently.
+    if benefit_usages:
+        latest_by_benefit: dict[str, tuple[tuple, object]] = {}
+        for u in benefit_usages:
+            if not getattr(u, "amount_available", None):
+                continue
+            key = (
+                getattr(u, "benefit_key", None)
+                or getattr(u, "benefit_name", None)
+                or f"row-{id(u)}"
+            )
+            order = (
+                getattr(u, "period_start", None) or dt.date.min,
+                str(getattr(u, "period_key", "") or ""),
+            )
+            prev = latest_by_benefit.get(key)
+            if prev is None or order > prev[0]:
+                latest_by_benefit[key] = (order, u)
+        trackable = [u for _, u in latest_by_benefit.values()]
+        if trackable:
+            try:
+                avg_util = sum(
+                    min((u.amount_used or 0) / u.amount_available, 1.0)
+                    for u in trackable
+                ) / len(trackable)
+            except (TypeError, ZeroDivisionError, MissingKeyError):
+                avg_util = None
+            if avg_util is not None:
+                if avg_util >= 0.6:
+                    score += 10
+                    drivers.append(f"benefit credits well-used ({avg_util:.0%})")
+                elif avg_util == 0:
+                    score -= 8
+                    drivers.append(f"benefit credits unused ({len(trackable)} trackable)")
+
     if not drivers:
         drivers.append("limited ongoing value data")
     return round(max(0, min(score, 100))), drivers
@@ -668,13 +702,21 @@ def _held_actions(
         reason = f"Active — keep. Ongoing value score {value_score}/100 from {', '.join(drivers)}."
 
         # Re-queue when re-eligibility has passed.
+        requeue_note = ""
         if h.welcome_bonus_earned and again_ok:
             action = "requeue"
             reason = "Welcome bonus is eligible again — re-queue this product."
+            since = f" since {again_date.isoformat()}" if again_date else ""
+            requeue_note = (
+                f" Also bonus-re-eligible{since} — consider downgrade/cancel then reapply."
+            )
 
         if h.renewal_date:
             days_to_renewal = (h.renewal_date - today).days
             if 0 <= days_to_renewal <= 60:
+                # Renewal decision takes over the action, but a pending
+                # re-eligibility must stay visible in the binding reason.
+                was_requeue = action == "requeue"
                 annual_fee_val = h.annual_fee or (product.annual_fee if product else None) or 0
                 fee_note = f" ${annual_fee_val:,.0f} annual fee." if annual_fee_val > 0 else ""
                 if value_score >= 55:
@@ -695,6 +737,8 @@ def _held_actions(
                         f"Renewal {h.renewal_date.isoformat()}.{fee_note} Ask retention, then decide. "
                         f"Value score {value_score}/100 from {', '.join(drivers)}."
                     )
+                if was_requeue:
+                    reason += requeue_note
 
         if h.status in ("Downgrade Pending", "Cancel Pending"):
             action = "downgrade" if h.status == "Downgrade Pending" else "cancel"

@@ -30,6 +30,10 @@ MAX_CHARS = 8000
 DEFAULT_CACHE_TTL_HOURS = 24
 DEFAULT_PER_DOMAIN_LIMIT = 2
 DEFAULT_MAX_CONCURRENCY = 8
+# Fetch-failure honesty: serving cached content when the network fails is fine
+# for a while, but an unbounded stale-if-error cache silently freezes data.
+# Older cached copies are dropped so the failure surfaces instead.
+STALE_IF_ERROR_MAX_AGE_DAYS = int(os.getenv("WEWARDS_STALE_IF_ERROR_MAX_AGE_DAYS", "14"))
 
 
 @dataclass(slots=True)
@@ -184,6 +188,13 @@ def _is_fresh(page: FetchedPage, ttl_hours: int) -> bool:
     return (_utc_now() - fetched_at) < dt.timedelta(hours=ttl_hours)
 
 
+def _within_stale_if_error_window(page: FetchedPage) -> bool:
+    fetched_at = _parse_iso(page.fetched_at)
+    if not fetched_at:
+        return False  # unknown age is not proof of freshness
+    return (_utc_now() - fetched_at) <= dt.timedelta(days=STALE_IF_ERROR_MAX_AGE_DAYS)
+
+
 def fetch_page(
     url: str,
     *,
@@ -192,10 +203,14 @@ def fetch_page(
     force: bool = False,
     cache_ttl_hours: int = DEFAULT_CACHE_TTL_HOURS,
     client: httpx.Client | None = None,
+    error_sink: dict[str, str] | None = None,
 ) -> FetchedPage | None:
     """Fetch one public URL, using cache + HTTP validators when available.
 
     Pass a shared ``client`` to reuse connections (keep-alive) across many URLs.
+    Pass ``error_sink`` to receive per-URL fetch failures ({url: "ErrorClass:
+    detail"}); failures are recorded even when a stale cached copy is served,
+    so network failure is distinguishable from "product not on page".
     """
     cache = cache or PageCache()
     cached = cache.get(url)
@@ -219,8 +234,10 @@ def fetch_page(
             return cache.touch(url, _iso(_utc_now()))
         resp.raise_for_status()
         html = resp.text
-    except (httpx.HTTPError, ValueError):
-        if cached:
+    except (httpx.HTTPError, ValueError) as exc:
+        if error_sink is not None:
+            error_sink[url] = f"{type(exc).__name__}: {exc}"
+        if cached and _within_stale_if_error_window(cached):
             cached.cache_status = "stale-if-error"
             return cached
         return None
@@ -250,8 +267,14 @@ def fetch_many_pages(
     per_domain_limit: int = DEFAULT_PER_DOMAIN_LIMIT,
     force: bool = False,
     cache_ttl_hours: int = DEFAULT_CACHE_TTL_HOURS,
+    error_sink: dict[str, str] | None = None,
 ) -> dict[str, FetchedPage]:
-    """Fetch URLs concurrently, capped globally and per domain."""
+    """Fetch URLs concurrently, capped globally and per domain.
+
+    Pass ``error_sink`` to receive per-URL fetch failures; failed URLs are
+    otherwise silently absent from the result, which callers must not confuse
+    with "the product is not on that page".
+    """
     unique_urls = list(dict.fromkeys([u for u in urls if u]))
     if not unique_urls:
         return {}
@@ -277,6 +300,7 @@ def fetch_many_pages(
                 force=force,
                 cache_ttl_hours=cache_ttl_hours,
                 client=client,
+                error_sink=error_sink,
             )
 
     out: dict[str, FetchedPage] = {}

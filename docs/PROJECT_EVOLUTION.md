@@ -4,6 +4,136 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-16 - Autonomous-verification + decision-correctness fix pass
+
+**Status:** implemented and verified. **Scope:** Davin-approved fixes from the
+same-day audit (below), under the new owner doctrine: fully autonomous
+churning engine, points-first for travel, no human review queue — automated
+corroboration replaces manual verification. Four builder slices with disjoint
+write sets, integrated and verified together.
+
+**What changed**
+
+1. Eligibility/pipeline (`eligibility.py`, `pipeline.py`): shared re-bonus
+   rule table (Amex lifetime, Sapphire 48, generic Chase 24, Citi/Barclays/
+   airline 24, Venture families 48) now gates the APPLY path — closed cards
+   count, unknown bonus dates are conservatively ineligible, in-window cards
+   show dated WAIT reasons. Chase 2/30 counts closed cards; Amex 5-credit-card
+   ceiling applies to business targets (dead AMEX_CHARGE_LIMIT removed);
+   renewal actions keep requeue notes; benefit-usage renewal adjustment shows
+   visible drivers and weights each benefit's most recent period; LOW PRIORITY
+   reasons are honest (cash-filter vs timing vs value floor).
+2. Scoring (`scoring.py`, `catalog.py`, `config.py`): high-value offers below
+   WAIT_THRESHOLD surface as WAIT (never silently dropped); cash-only offers
+   valued honestly (dollar-based peak comparison) and demoted with an explicit
+   flag under `POINTS_FIRST` (default on, env-overridable); public and
+   targeted offers valued as competing bundles (no double-count); entries
+   gain `cash_only` field.
+3. Household (`household.py`): super-family referral matches labeled `family`
+   with the actually-held card named (no false "already holds" claims), route
+   notes the super-family; referral table sorts household gain before pipeline
+   rank; move ordering mirrors the pipeline precedence (band > value > rank >
+   status/peak).
+4. Ingestion (`validate.py`, `schedule.py`, `fetch.py`, `peak_research.py`,
+   `research_resolver.py`, `discover.py`, `source_quality.py`, `routers/
+   run.py`, `models.py`, `db.py`): eligibility-rule proposals approve only on
+   official-issuer or >=2-independent-host evidence, else auto-reject with
+   retry; offer deltas require corroboration independent of the proposing
+   extraction, self-expire after 14 days; pending changes no longer freeze
+   products out of refresh; strict host matching everywhere (no lookalike
+   domains); plausibility + unit gates on all commit paths (unknown units are
+   never points); referral evidence aliasing + snippet requirement; stale-if-
+   error cache age-capped, fetch failures surfaced, no false `last_verified`;
+   peak research rotates via additive `peak_research_attempted_at` column with
+   cooldown and stores raw confidence; memory-mode discovery drops eligibility
+   tags and sanitizes text; `/api/run/peak-research` route typo fixed.
+5. Docs reconciled to the shipped semantics and new doctrine: AGENTS.md and
+   CLAUDE.md principles, DECISION_RULES.md, DATA_RELIABILITY.md,
+   PROJECT_INTENT_CARD.md, PIPELINE_V2_OVERHAUL.md header/corrections,
+   CURRENT_STATE.md, NEXT_TASKS.md.
+
+**Verification**
+
+- Full backend suite: 227 tests pass (159 before; +68 regression tests
+  covering every fixed finding and all six Pipeline V2 changes).
+- Frontend typecheck + production build clean; `backend.main` imports.
+- In-process API smoke on real data: pipelines healthy for both users
+  (high-value below-peak offers now WAIT; one prior APPLY NOW correctly gated
+  by a re-bonus window), household referrals 4→5 with zero mislabeled routes,
+  `/api/run/peak-research` present, old broken path gone.
+- New env tunables: `POINTS_FIRST`, `WEWARDS_ELIG_EVIDENCE_CONFIDENCE`,
+  `WEWARDS_ELIG_INDEPENDENT_HOSTS`, `WEWARDS_PENDING_CHANGE_EXPIRY_DAYS`,
+  `WEWARDS_STALE_IF_ERROR_MAX_AGE_DAYS`, `WEWARDS_PEAK_RESEARCH_COOLDOWN_DAYS`.
+
+**Open risks / follow-ups**
+
+- The tailnet container still runs pre-fix code until rebuilt (`/docker`);
+  run the next catalog refresh only after redeploy so it executes under the
+  hardened gates.
+- Referral bonuses populated on only 1 of ~9 household-held products; the
+  next refresh (post-redeploy) should close this under the fixed referral
+  evidence path.
+- `run_refresh` result key `products_pending_review` is retained for API
+  compat but is now always 0; review-queue UI may eventually be simplified.
+- Later-refresh corroboration accepts a cached re-fetch of the same page as a
+  genuine later observation (age-capped); not host-independent by design.
+
+**Rollback:** `git revert` this commit; the schema change is additive-only
+(`peak_research_attempted_at`, nullable) and safe to leave in place.
+
+## 2026-07-16 - Full run-through verification pass (report-only audit)
+
+**Status:** audit only — no implementation files changed. **Scope:** scan/
+scrape/ingestion chain and the decision/calculation system (pipeline, scoring,
+household, eligibility, referrals, bonus offers, timing), per Davin's request.
+
+**Verified working**
+
+- 159 backend tests pass (docs still cite 133); frontend typecheck + build
+  clean; backend compiles and imports.
+- Live tailnet container healthy: both users get full pipelines with zero
+  invariant violations (binding reasons present, APPLY NOW always
+  decision-ready with value, NEEDS DATA quarantined, requeue/ladder_review
+  held actions, 5/24 + quarter pace guardrail live).
+- 2026-07-15 catalog refresh completed sanely: 43 queued / 33 resolved /
+  9 review / 10 needs-data; all 3 errors failed safe (anti-bot labeled,
+  malformed LLM row rejected). No new scan was triggered by this audit.
+- All six PIPELINE_V2_OVERHAUL changes are present on `main`; changes 1, 3,
+  4, 5 verified correct as specified.
+- PUBLIC/PRIVATE firewall holds across ingestion (grep + test verified);
+  fetch ladder order is cheap-first with cooldowns; unknowns stay NEEDS DATA.
+
+**Key findings (full detail in session report; fixes pending approval)**
+
+- CRITICAL: issuer re-bonus windows (Citi/Barclays/airline 24mo, CapOne biz
+  48mo) live only in `bonus_eligible_again` (requeue), not `eligibility()` —
+  closed-card products re-enter the apply queue; reproduced APPLY NOW for a
+  Citi bonus earned 90 days prior.
+- CRITICAL: `auto_resolve_pending_changes` step 4 auto-approves
+  `eligibility_tags`/`reports_to_personal_credit` (SUPPLEMENTAL_WRITE_FIELDS)
+  with no evidence/confidence check; step-5 human gate is dead code for them.
+- CRITICAL: large offer-delta review is circular — the proposing extraction's
+  own evidence row satisfies `_evidence_backs_value` (trusted_hosts=None) and
+  every refresh ends with auto-resolve, so >15% deltas self-approve same-run.
+- HIGH: super-family referral matches labeled `exact` with a false "already
+  holds" reason (`family_route` never checks `super_family`).
+- HIGH: high-value offers under 50% of peak drop to LOW PRIORITY with a
+  false "below value floor" reason; cash-only offers score peak_score 0.
+- Referral data gap: only 1 of 9 held household products has a referral
+  bonus tracked — targeted research on held products would close it (Davin
+  confirmed referral bonuses matter household-side only).
+- Plus mediums/lows: ranking precedence differs across pipeline vs household
+  moves vs referral table; referral evidence alias missing; lookalike-domain
+  suffix matching; unit-less amounts default to points; stale-if-error
+  refreshes `last_verified`; 5 of 6 V2 changes untested; doc drift
+  (PIPELINE_V2 header/branch/test counts, CURRENT_STATE Docker hosting).
+
+**State debt note:** `Dockerfile` newer than `docs/CURRENT_STATE.md` — the
+2026-07-14 ledger entry documents that work; the capsule's run commands and
+ports remain accurate but do not yet mention the hosted tailnet container.
+
+**Rollback:** n/a (no code changes). This entry is the audit record.
+
 ## 2026-07-14 - Docker packaging and tailnet subpath hosting support
 
 **Status:** implemented and verified live. **Scope:** build/deploy packaging

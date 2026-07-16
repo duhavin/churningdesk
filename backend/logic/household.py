@@ -58,6 +58,15 @@ def _is_chase(issuer: str | None) -> bool:
     return "chase" in (issuer or "").lower()
 
 
+def _is_ink_business(row: dict) -> bool:
+    """Chase Ink business card check, mirroring pipeline.sort_key's is_ink term."""
+    return (
+        _is_chase(row.get("issuer"))
+        and (row.get("ownership") or "") == "Business"
+        and "ink" in (row.get("product_name") or "").lower()
+    )
+
+
 def _held_referral_keys(
     held: models.HeldCard, products: dict[int, models.CardProduct]
 ) -> set[tuple[str, int | tuple[str, str]]]:
@@ -129,13 +138,17 @@ def _referral_reason(
     ref_cash: float | None,
     ref_val: float | None,
     family_route: bool = False,
+    held_display_name: str | None = None,
 ) -> str:
     display_name = nc.get("display_name") or product_display_name(nc.get("issuer"), nc.get("product_name"))
     if family_route:
+        # Name the card the referrer ACTUALLY holds — never claim they hold the
+        # candidate product itself (they don't; the match is family-level).
+        held_label = held_display_name or "a same-referral-family product"
         base = (
-            f"{from_user} already holds a same-family {display_name} product - route "
-            f"{to_user}'s application through {from_user}'s family referral path so the "
-            "household can capture any issuer-supported referral bonus on top of the welcome offer"
+            f"{from_user} holds {held_label} - same referral family; have {from_user} send "
+            f"{to_user} a referral link for {display_name} so the household can capture any "
+            "issuer-supported referral bonus on top of the welcome offer"
         )
     else:
         base = (
@@ -233,7 +246,39 @@ def build_household(db: Session) -> dict:
                     continue
                 exact_route = any(key[0] in {"id", "key", "variant"} for key in matched_keys)
                 candidate_family = family_key(nc["issuer"], nc["product_name"], nc.get("product_family"))
-                family_route = not exact_route and any(key[0] == "family" for key in matched_keys)
+                # super_family matches (e.g. Ink Cash holder -> Ink Preferred applicant)
+                # are family-level routes, never "exact" — the referrer does not hold
+                # the candidate product itself.
+                family_route = not exact_route and any(
+                    key[0] in {"family", "super_family"} for key in matched_keys
+                )
+                super_family_only = family_route and all(
+                    key[0] == "super_family" for key in matched_keys
+                )
+                super_family_name = next(
+                    (key[1] for key in matched_keys if key[0] == "super_family"), None
+                )
+                held_display = None
+                if family_route:
+                    family_match_keys = {
+                        key for key in matched_keys if key[0] in {"family", "super_family"}
+                    }
+                    held_match = next(
+                        (
+                            h
+                            for h in active_by_user[from_user]
+                            if _held_referral_keys(h, products) & family_match_keys
+                        ),
+                        None,
+                    )
+                    if held_match is not None:
+                        held_display = product_display_name(held_match.issuer, held_match.product_name)
+                if super_family_only and super_family_name:
+                    route = f"Refer via {from_user} ({super_family_name} family)"
+                elif family_route:
+                    route = f"Refer via {from_user} (family)"
+                else:
+                    route = f"Refer via {from_user}"
                 referral_family_key = (
                     f"{candidate_family[0]}:{candidate_family[1]}"
                     if candidate_family in REFERRAL_FAMILY_KEYS
@@ -270,20 +315,24 @@ def build_household(db: Session) -> dict:
                         "is_exceptional": nc.get("is_exceptional", False),
                         "decision_ready": nc.get("decision_ready", True),
                         "data_quality_issues": nc.get("data_quality_issues", []),
-                        "route": f"Refer via {from_user}{' (family)' if family_route else ''}",
+                        "route": route,
                         "referral_match": "family" if family_route else "exact",
                         "referral_family_key": referral_family_key,
-                        "reason": _referral_reason(from_user, to_user, nc, ref_pts, ref_cash, ref_val, family_route),
+                        "reason": _referral_reason(
+                            from_user, to_user, nc, ref_pts, ref_cash, ref_val, family_route, held_display
+                        ),
                     }
                 )
 
     def referral_sort_key(row: dict) -> tuple:
+        # Household gain (welcome + referral value) is the primary value signal;
+        # per-user pipeline rank is only a tiebreaker (PIPELINE_V2 change 1).
         return (
             STATUS_PRIORITY.get(row.get("recipient_status"), 0),
             1 if row.get("is_exceptional") else 0,
-            _pipeline_rank_score(row.get("pipeline_rank")),
             row.get("household_gain") or 0,
             row.get("household_points") or 0,
+            _pipeline_rank_score(row.get("pipeline_rank")),
             row.get("peak_score") or 0,
         )
 
@@ -379,17 +428,23 @@ def build_household(db: Session) -> dict:
                 }
             )
 
-    # Chase 5/24 urgency overrides value — approvals get harder at 5/24 so Chase
-    # must come first while under 5/24. Within the same urgency tier, household
-    # value (welcome + referral bonus) ranks cards over raw pipeline position.
+    # Mirror the per-user pipeline precedence (DECISION_RULES "Ranking of the
+    # actionable queue"): strategic bands first — Chase while under 5/24, then
+    # Ink — then exceptional offers, then household value (welcome + referral
+    # bonus) as the primary value signal with pipeline rank as tiebreaker, and
+    # status/peak as trailing timing signals. This keeps Household "best
+    # applications" in agreement with the Pipeline page: a Chase WAIT card can
+    # legitimately top the list while a user is under 5/24, and referral value
+    # can lift a card over its raw pipeline position.
     def move_sort_key(row: dict) -> tuple:
         return (
-            STATUS_PRIORITY.get(row.get("status"), 0),
-            1 if row.get("is_exceptional") else 0,
             1 if row.get("chase_urgent") else 0,
+            1 if _is_ink_business(row) else 0,
+            1 if row.get("is_exceptional") else 0,
             row.get("household_value") or 0,
             row.get("household_points") or 0,
             _pipeline_rank_score(row.get("pipeline_rank")),
+            STATUS_PRIORITY.get(row.get("status"), 0),
             row.get("peak_score") or 0,
             -users.index(row["user"]) if row.get("user") in users else -999,
         )

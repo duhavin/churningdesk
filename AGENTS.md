@@ -76,8 +76,13 @@ accurate data in, optimal explainable actions out.
 4. PUBLIC/PRIVATE firewall is mandatory.
 5. Unknown/unsupported data becomes `NEEDS DATA`, never a fabricated value.
 6. Public current offers, public peaks, targeted offers, and targeted highs stay separate.
-7. Review queue protects ambiguous/untrusted large offer changes and eligibility-rule changes; high-confidence official product-page current offer terms may auto-adopt with evidence.
-8. Web search is cached last resort, not routine refresh.
+7. Ambiguous/untrusted large offer changes and eligibility-rule changes are verified
+   autonomously: approval requires official-issuer or independent-source corroboration
+   (strict host matching); unverified changes auto-reject with retry — no human review
+   queue (owner doctrine 2026-07-16). High-confidence official product-page current offer
+   terms may auto-adopt with evidence.
+8. Web search + rendered (Crawl4AI) fallback are default-on for refreshes, bounded by
+   stale-gates and per-card cooldowns; Crawl4AI is the primary scraper.
 9. Additive DB columns belong in `backend/db.py::_ADDED_COLUMNS`.
 10. Every meaningful change gets a `docs/PROJECT_EVOLUTION.md` entry.
 

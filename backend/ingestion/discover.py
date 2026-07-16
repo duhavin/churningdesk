@@ -24,6 +24,7 @@ from ..product_identity import (
     reward_currency_for_product,
     reward_tag_for_currency,
 )
+from ..text_sanitize import clean_text
 from . import extract, fetch
 from .extract import IngestionUnavailable
 
@@ -202,7 +203,9 @@ def _correct_discovered_issuer(
 
 
 def _clean_product_name(title: str) -> str | None:
-    title = html_std.unescape(re.sub(r"\s+", " ", title)).strip()
+    # Shared PUBLIC-text clean path (mojibake repair, symbol strip, whitespace)
+    # before the discovery-specific structural filters below.
+    title = clean_text(html_std.unescape(title))
     if not title:
         return None
     low_original = title.lower()
@@ -374,7 +377,46 @@ def discover_static_cards(issuers: list[str], source_urls: list[str] | None = No
     }
 
 
+_ELIGIBILITY_NOTE_MARKERS = (
+    "5/24",
+    "once per lifetime",
+    "lifetime",
+    "48 month",
+    "48-month",
+    "24 month",
+    "24-month",
+    "closed to new",
+    "not accepting",
+    "no longer accepting",
+    "no longer available",
+    "stopped accepting",
+    "eligib",
+    "velocity",
+    "one sapphire",
+)
+
+
+def _note_bears_eligibility(note: str | None) -> bool:
+    low = (note or "").lower()
+    return bool(low) and any(marker in low for marker in _ELIGIBILITY_NOTE_MARKERS)
+
+
+def _clean_discovered_note(note: str | None, *, drop_eligibility: bool = False) -> str | None:
+    cleaned = clean_text(note)
+    if not cleaned:
+        return None
+    if drop_eligibility and _note_bears_eligibility(cleaned):
+        return None
+    return cleaned
+
+
 def _llm_discovery(issuers: list[str]) -> tuple[list[DiscoveryCandidate], str | None]:
+    """Memory-mode (LLM recall) discovery: identities only, never rule facts.
+
+    Model memory is not source evidence — eligibility_tags and eligibility-
+    bearing notes are dropped here (offers already stay null); eligibility
+    rules can only arrive later through sourced, verified ingestion.
+    """
     try:
         cards = extract.discover_cards(issuers)
     except IngestionUnavailable as exc:
@@ -392,23 +434,26 @@ def _llm_discovery(issuers: list[str]) -> tuple[list[DiscoveryCandidate], str | 
         )
         if not issuer:
             continue
-        currency, tag = _infer_rewards(card.product_name, issuer)
+        product_name = clean_text(card.product_name)
+        if not product_name:
+            continue
+        currency, tag = _infer_rewards(product_name, issuer)
         candidates.append(
             DiscoveryCandidate(
                 issuer=issuer,
-                product_name=card.product_name.strip(),
+                product_name=product_name,
                 ownership=card.ownership or "Personal",
                 account_type=card.account_type or "Credit Card",
                 currency=card.currency or currency,
                 source_url=card.source_url,
-                eligibility_tags=card.eligibility_tags,
+                eligibility_tags=None,
                 tag=card.tag or tag,
                 reports_to_personal_credit=(
                     card.reports_to_personal_credit
                     if card.reports_to_personal_credit is not None
                     else (card.ownership or "Personal").lower() != "business"
                 ),
-                notes=card.notes,
+                notes=_clean_discovered_note(card.notes, drop_eligibility=True),
                 confidence=0.6,
                 added_by="llm_discovery",
             )
@@ -438,15 +483,20 @@ def _web_research_discovery(issuers: list[str]) -> tuple[list[DiscoveryCandidate
         )
         if not issuer:
             continue
-        currency, tag = _infer_rewards(card.product_name, issuer)
+        product_name = clean_text(card.product_name)
+        if not product_name:
+            continue
+        currency, tag = _infer_rewards(product_name, issuer)
         candidates.append(
             DiscoveryCandidate(
                 issuer=issuer,
-                product_name=card.product_name.strip(),
+                product_name=product_name,
                 ownership=card.ownership or "Personal",
                 account_type=card.account_type or "Credit Card",
                 currency=card.currency or currency,
-                source_url=card.source_url or (source_urls[0] if source_urls else None),
+                # Only the URL cited for THIS card; never smear the research
+                # pass's first source onto a card it may never have mentioned.
+                source_url=card.source_url,
                 eligibility_tags=card.eligibility_tags,
                 tag=card.tag or tag,
                 reports_to_personal_credit=(
@@ -454,7 +504,7 @@ def _web_research_discovery(issuers: list[str]) -> tuple[list[DiscoveryCandidate
                     if card.reports_to_personal_credit is not None
                     else (card.ownership or "Personal").lower() != "business"
                 ),
-                notes=card.notes,
+                notes=_clean_discovered_note(card.notes),
                 confidence=0.78,
                 added_by="llm_discovery",
             )

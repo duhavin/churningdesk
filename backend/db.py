@@ -64,6 +64,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "updated_at": "DATETIME",
         "last_web_search_at": "DATETIME",
         "last_supplemental_search_at": "DATETIME",
+        "peak_research_attempted_at": "DATETIME",
     },
     "transfer_partner": {
         "bonus_pct": "FLOAT",

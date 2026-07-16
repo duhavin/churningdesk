@@ -7,7 +7,7 @@ from unittest.mock import patch
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from backend import config, models
+from backend import config, models, source_quality
 from backend.db import Base
 from backend.ingestion import extract, schedule, static_parse, validate
 from backend.logic import catalog, eligibility, pipeline, scoring
@@ -1291,6 +1291,418 @@ class AutoResolveTests(unittest.TestCase):
         db.refresh(product)
         self.assertEqual(product.peak_offer_points, 175000)
 
+    # --- Autonomous doctrine (2026-07-16): the queue never needs a human ----
+
+    def _evidence(self, db, product, field, value, source_url, confidence=0.9, created_at=None):
+        row = models.IngestionEvidence(
+            product_id=product.id,
+            field=field,
+            value_json=json.dumps(value),
+            source_url=source_url,
+            confidence=confidence,
+            fetched_at=dt.datetime.now().isoformat(),
+        )
+        db.add(row)
+        db.commit()
+        if created_at is not None:
+            row.created_at = created_at
+            db.commit()
+        return row
+
+    def test_eligibility_from_one_untrusted_source_auto_rejects_retryably(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Citi", product_name="Citi Custom Cash Card")
+        db.add(product); db.commit()
+        tags = ["closed_to_new_applicants"]
+        self._evidence(db, product, "eligibility_tags", tags, "https://randomblog.example/citi-post", confidence=0.9)
+        change = self._pending(db, product, "eligibility_tags", tags,
+                               source_url="https://randomblog.example/citi-post")
+
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["rejected_count"], 1)
+        self.assertEqual(report["pending_count"], 0)
+        self.assertEqual(change.status, "rejected")
+        self.assertEqual(change.reason_code, "unverified_eligibility_auto_reject")
+        self.assertIn("re-verify on future refreshes", change.review_note)
+        db.refresh(product)
+        self.assertIsNone(product.eligibility_tags)
+        # Retryable: a later refresh may re-propose the identical value.
+        self.assertFalse(
+            validate._matching_rejected_change_exists(db, product, "eligibility_tags", json.dumps(tags))
+        )
+
+    def test_eligibility_from_official_issuer_host_auto_approves(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Chase Sapphire Preferred Card")
+        db.add(product); db.commit()
+        tags = ["sapphire_48mo"]
+        self._evidence(
+            db, product, "eligibility_tags", tags,
+            "https://creditcards.chase.com/rewards-credit-cards/sapphire/preferred",
+            confidence=0.7,
+        )
+        change = self._pending(db, product, "eligibility_tags", tags)
+
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["approved_count"], 1)
+        self.assertEqual(change.status, "approved")
+        db.refresh(product)
+        self.assertEqual(product.eligibility_tags, tags)
+
+    def test_eligibility_from_two_independent_hosts_auto_approves(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Citi", product_name="Citi Custom Cash Card")
+        db.add(product); db.commit()
+        tags = ["closed_to_new_applicants"]
+        self._evidence(db, product, "eligibility_tags", tags, "https://bloga.example/citi", confidence=0.85)
+        self._evidence(db, product, "eligibility_tags", tags, "https://blogb.example/citi", confidence=0.85)
+        change = self._pending(db, product, "eligibility_tags", tags)
+
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["approved_count"], 1)
+        db.refresh(product)
+        self.assertEqual(product.eligibility_tags, tags)
+
+    def test_large_offer_delta_cannot_self_approve_in_same_refresh(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Test Rewards Card",
+                                     current_offer_points=60000)
+        db.add(product); db.commit()
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.9,
+            current_offer_points=100000,
+            offer_status="public",
+            source_url="https://cardblog.example/test-rewards-card-bonus",
+            evidence_snippets={"bonus_amount": ["Test Rewards Card: 100,000 points after spend."]},
+        )
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+        self.assertIn("current_offer_points", result["proposed"])
+
+        # Same run: auto_resolve sees only the proposing extraction's own
+        # evidence row — that is not corroboration.
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["approved_count"], 0)
+        self.assertEqual(report["pending_count"], 1)
+        self.assertEqual(report["pending"][0]["reason"], "awaiting_corroboration")
+        db.refresh(product)
+        self.assertEqual(product.current_offer_points, 60000)
+
+    def test_second_host_evidence_corroborates_pending_offer_change(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Test Rewards Card",
+                                     current_offer_points=60000)
+        db.add(product); db.commit()
+        self._evidence(db, product, "current_offer_points", 100000, "https://cardblog.example/a", confidence=0.9)
+        change = self._pending(db, product, "current_offer_points", 100000,
+                               source_url="https://cardblog.example/a")
+        self._evidence(db, product, "current_offer_points", 100000, "https://otherblog.example/b", confidence=0.9)
+
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["approved_count"], 1)
+        self.assertEqual(report["approved"][0]["basis"], "independent_host")
+        db.refresh(product)
+        self.assertEqual(product.current_offer_points, 100000)
+
+    def test_later_refresh_reextraction_corroborates_same_host(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Test Rewards Card",
+                                     current_offer_points=60000)
+        db.add(product); db.commit()
+        change = self._pending(db, product, "current_offer_points", 100000,
+                               source_url="https://cardblog.example/a")
+        self._evidence(
+            db, product, "current_offer_points", 100000, "https://cardblog.example/a",
+            confidence=0.9, created_at=change.created_at + dt.timedelta(days=1),
+        )
+
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["approved_count"], 1)
+        self.assertEqual(report["approved"][0]["basis"], "later_refresh_reconfirmed")
+
+    def test_uncorroborated_offer_change_expires_after_window(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Test Rewards Card",
+                                     current_offer_points=60000)
+        db.add(product); db.commit()
+        change = self._pending(db, product, "current_offer_points", 100000,
+                               source_url="https://cardblog.example/a")
+        change.created_at = validate._utcnow() - dt.timedelta(days=15)
+        db.commit()
+        self._evidence(
+            db, product, "current_offer_points", 100000, "https://cardblog.example/a",
+            confidence=0.9, created_at=change.created_at,
+        )
+
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["rejected_count"], 1)
+        self.assertEqual(change.status, "rejected")
+        self.assertEqual(change.reason_code, "offer_change_never_corroborated")
+        self.assertIn("never corroborated", change.review_note)
+        db.refresh(product)
+        self.assertEqual(product.current_offer_points, 60000)
+        self.assertFalse(
+            validate._matching_rejected_change_exists(db, product, "current_offer_points", json.dumps(100000))
+        )
+
+    def test_peak_evidence_from_lookalike_host_is_not_trusted(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Amex", product_name="Platinum Card",
+                                     current_offer_points=80000)
+        db.add(product); db.commit()
+        self._evidence(
+            db, product, "peak_offer_points", 175000,
+            "https://notdoctorofcredit.com/amex-platinum-175k", confidence=0.85,
+        )
+        change = self._pending(db, product, "peak_offer_points", 175000)
+
+        report = validate.auto_resolve_pending_changes(db)
+
+        self.assertEqual(report["approved_count"], 0)
+        self.assertEqual(change.status, "pending")
+
+    def test_stale_evidence_beyond_age_window_does_not_back_value(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Test Rewards Card")
+        db.add(product); db.commit()
+        self._evidence(
+            db, product, "current_offer_points", 75000, "https://www.chase.com/x",
+            confidence=0.9, created_at=validate._utcnow() - dt.timedelta(days=61),
+        )
+
+        self.assertFalse(
+            validate._evidence_backs_value(db, product.id, "current_offer_points", json.dumps(75000))
+        )
+
+
+class StrictHostMatchingTests(unittest.TestCase):
+    def test_host_matches_is_strict(self):
+        self.assertTrue(source_quality.host_matches("chase.com", "chase.com"))
+        self.assertTrue(source_quality.host_matches("sub.chase.com", "chase.com"))
+        self.assertTrue(source_quality.host_matches("www.doctorofcredit.com", "doctorofcredit.com"))
+        self.assertFalse(source_quality.host_matches("purchase.com", "chase.com"))
+        self.assertFalse(source_quality.host_matches("notdoctorofcredit.com", "doctorofcredit.com"))
+        self.assertFalse(source_quality.host_matches("chase.com.evil.example", "chase.com"))
+
+    def test_trusted_peak_source_uses_strict_hosts(self):
+        from backend.ingestion import peak_research
+
+        self.assertTrue(peak_research._trusted_peak_source("https://www.doctorofcredit.com/x"))
+        self.assertTrue(peak_research._trusted_peak_source("https://sub.chase.com/x"))
+        self.assertFalse(peak_research._trusted_peak_source("https://notdoctorofcredit.com/x"))
+        self.assertFalse(peak_research._trusted_peak_source("https://purchase.com/x"))
+
+
+class CommitPathGuardTests(unittest.TestCase):
+    def _session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    def test_implausible_first_sight_value_routes_to_review_not_commit(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Test Rewards Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.9,
+            current_offer_points=900000,  # above the 500k plausible ceiling
+            offer_status="public",
+            source_url="https://example.test/test-rewards-card",
+            evidence_snippets={"bonus_amount": ["Earn 900,000 points after spend."]},
+        )
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+
+        self.assertNotIn("current_offer_points", result["committed"])
+        self.assertIn("current_offer_points", result["proposed"])
+        self.assertIsNone(product.current_offer_points)
+
+        report = validate.auto_resolve_pending_changes(db)
+        self.assertEqual(report["rejected_count"], 1)
+        self.assertIsNone(product.current_offer_points)
+
+    def test_unknown_bonus_unit_never_becomes_points(self):
+        row = extract.OfferScanRow(
+            issuer="Test Bank",
+            card_name="Test Rewards Card",
+            offer_status="public",
+            confidence=0.9,
+            found=True,
+            bonus_amount=500,
+            bonus_unit=None,
+            referral_bonus_amount=500,
+            referral_bonus_unit=None,
+        )
+
+        ext = schedule._row_to_extraction(row)
+
+        self.assertIsNone(ext.current_offer_points)
+        self.assertIsNone(ext.current_offer_cash)
+        self.assertIsNone(ext.referral_bonus_points)
+        self.assertIsNone(ext.referral_bonus_cash)
+        self.assertIn("bonus_unit_unknown", ext.needs_review_reason or "")
+
+    def test_known_units_still_map_to_points_and_cash(self):
+        points_row = extract.OfferScanRow(
+            issuer="Test Bank", card_name="Test Rewards Card",
+            offer_status="public", confidence=0.9, found=True,
+            bonus_amount=75000, bonus_unit="bonus miles",
+        )
+        cash_row = extract.OfferScanRow(
+            issuer="Test Bank", card_name="Test Rewards Card",
+            offer_status="public", confidence=0.9, found=True,
+            bonus_amount=200, bonus_unit="cash back",
+        )
+
+        self.assertEqual(schedule._row_to_extraction(points_row).current_offer_points, 75000)
+        self.assertEqual(schedule._row_to_extraction(cash_row).current_offer_cash, 200)
+
+    def test_referral_scan_row_commits_points_with_evidence_end_to_end(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Chase Sapphire Preferred Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        snippet = "Earn 20,000 bonus points for each friend approved for the Sapphire Preferred card."
+        row = extract.OfferScanRow(
+            issuer="Chase",
+            card_name="Chase Sapphire Preferred Card",
+            source_url="https://creditcards.chase.com/rewards-credit-cards/sapphire/preferred",
+            offer_status="unknown",
+            confidence=0.9,
+            found=True,
+            referral_bonus_amount=20000,
+            referral_bonus_unit="points",
+            evidence_snippets={"referral_bonus_amount": [snippet]},
+        )
+
+        result = schedule._apply_scan_row(db, product, row)
+        db.commit()
+
+        self.assertIn("referral_bonus_points", result["committed"])
+        self.assertEqual(product.referral_bonus_points, 20000)
+        evidence = [
+            e for e in db.scalars(select(models.IngestionEvidence)).all()
+            if e.field == "referral_bonus_points"
+        ]
+        self.assertTrue(evidence)
+        self.assertIn(snippet, evidence[0].evidence_snippets)
+        # backend/logic/household.py reads referral_bonus_effective — the
+        # scraped value must be visible through that contract.
+        self.assertEqual(product.referral_bonus_effective, 20000)
+
+    def test_referral_commit_requires_evidence_snippet(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Chase Sapphire Preferred Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        ext = extract.OfferExtraction(
+            found=True,
+            confidence=0.9,
+            referral_bonus_points=20000,
+            offer_status="public",
+            source_url="https://creditcards.chase.com/rewards-credit-cards/sapphire/preferred",
+        )
+        result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+
+        self.assertNotIn("referral_bonus_points", result["committed"])
+        self.assertIsNone(product.referral_bonus_points)
+
+
+class ClosedToNewGuardTests(unittest.TestCase):
+    def _session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    def test_closed_from_non_official_source_is_proposed_not_direct_written(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Citi",
+            product_name="Citi Custom Cash Card",
+            currency="cash back",
+            current_offer_cash=200,
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        row = extract.OfferScanRow(
+            issuer="Citi",
+            card_name="Citi Custom Cash Card",
+            source_url="https://www.doctorofcredit.com/citi-custom-cash-closed",
+            offer_status="expired",
+            confidence=0.9,
+            found=True,
+            eligibility_tags=["closed_to_new_applicants"],
+            eligibility_language="Citi stopped accepting applications for the Custom Cash card.",
+            evidence_snippets={
+                "eligibility_language": ["Citi stopped accepting applications for the Custom Cash card."],
+            },
+        )
+
+        result = schedule._apply_scan_row(db, product, row)
+        db.commit()
+
+        self.assertEqual(result["proposed"], ["eligibility_tags"])
+        self.assertEqual(result["committed"], [])
+        self.assertIsNone(product.eligibility_tags)
+        self.assertEqual(product.current_offer_cash, 200)  # offers NOT nulled
+        pending = db.scalars(
+            select(models.ProposedChange).where(models.ProposedChange.status == "pending")
+        ).all()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].field, "eligibility_tags")
+
+        # The autonomous review then rejects it retryably: one non-official
+        # source is not verification, and nothing waits for a human.
+        report = validate.auto_resolve_pending_changes(db)
+        self.assertEqual(report["rejected_count"], 1)
+        self.assertEqual(pending[0].reason_code, "unverified_eligibility_auto_reject")
+        db.refresh(product)
+        self.assertIsNone(product.eligibility_tags)
+
+    def test_closed_phrase_in_unrelated_benefit_copy_is_not_closed(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Citi", product_name="Citi Custom Cash Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        row = extract.OfferScanRow(
+            issuer="Citi",
+            card_name="Citi Custom Cash Card",
+            source_url="https://www.citi.com/credit-cards/citi-custom-cash-credit-card",
+            offer_status="expired",
+            confidence=0.9,
+            found=True,
+            evidence_snippets={
+                "card_benefits": [
+                    "The $100 annual lounge credit is no longer available at select airports."
+                ],
+            },
+        )
+
+        self.assertFalse(schedule._is_closed_to_new_row(row, product))
+        self.assertIsNone(schedule._apply_closed_to_new_row(db, product, row))
+
+    def test_closed_phrase_near_application_context_is_detected(self):
+        product = models.CardProduct(issuer="Citi", product_name="Citi Custom Cash Card")
+        text = "As of May 2026 this card is no longer available to new applicants."
+        self.assertTrue(schedule._closed_phrase_in_application_context(text, product))
 
 
 if __name__ == "__main__":

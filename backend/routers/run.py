@@ -209,7 +209,7 @@ def refresh_status():
     return _job_snapshot()
 
 
-@router.post("/run/peak-research")
+@router.post("/peak-research")
 def run_peak_research(limit: int | None = None, db: Session = Depends(get_db)):
     """Resolve missing historic peaks: one card per structured extraction,
     verbatim-quote verified, trusted-source gated."""

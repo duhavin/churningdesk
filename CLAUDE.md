@@ -57,10 +57,13 @@ global config changes are outside autopush and still require explicit approval.
 7. Unknown or unsupported data becomes `NEEDS DATA`; never fabricate.
 8. Public offers, targeted offers, public peaks, and targeted/incognito highs
    stay separate.
-9. Ambiguous/untrusted large extracted changes and eligibility-rule changes go
-   through review; high-confidence official product-page current offer terms can
+9. Ambiguous/untrusted large extracted changes and eligibility-rule changes are
+   verified autonomously (official-issuer or independent-source corroboration,
+   strict host matching; unverified → auto-reject with retry). No human review
+   queue. High-confidence official product-page current offer terms can
    auto-adopt with evidence.
-10. Web search is a cached last resort, not routine refresh.
+10. Web search and the Crawl4AI rendered fallback are default-on for refreshes,
+    bounded by stale-gates and cooldowns.
 11. Additive DB migrations go through `backend/db.py::_ADDED_COLUMNS`.
 12. Meaningful changes update `docs/PROJECT_EVOLUTION.md`.
 

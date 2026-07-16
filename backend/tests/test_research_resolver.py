@@ -6,12 +6,13 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
+import httpx
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend import config, models
 from backend.db import Base
-from backend.ingestion import fetch, research_resolver, schedule
+from backend.ingestion import fetch, peak_research, research_resolver, schedule
 
 
 def _page(url: str, title: str, body: str) -> fetch.FetchedPage:
@@ -1391,10 +1392,315 @@ class ResearchResolverTests(unittest.TestCase):
         self.assertEqual(resolution.stats["cards_needs_data"], 2)
         self.assertTrue(all(result.row and not result.row.found for result in resolution.product_results))
 
+    def test_pending_change_does_not_block_refresh_selection(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Test Bank", product_name="Pending Review Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+        db.add(
+            models.ProposedChange(
+                target_table="card_product",
+                target_id=product.id,
+                field="current_offer_points",
+                old_value="null",
+                new_value="80000",
+                source_url="https://example.test/source",
+                confidence=0.9,
+                status="pending",
+            )
+        )
+        db.commit()
+
+        with patch.object(schedule.fetch, "fetch_many_pages", return_value={}):
+            result = schedule.run_refresh(
+                db,
+                product_ids=[product.id],
+                limit=None,
+                use_web_search=False,
+                llm_fallback=False,
+                include_incomplete=True,
+                force=True,
+                refresh_valuations=False,
+            )
+
+        # The pending change must not freeze the product out of refresh —
+        # corroboration depends on later refreshes seeing the product again.
+        self.assertEqual(result["products_checked"], 1)
+        self.assertEqual(result["products_pending_review"], 0)
+
     def _session(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         return sessionmaker(bind=engine)()
+
+
+class FetchHonestyTests(unittest.TestCase):
+    def _session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    class _FailingClient:
+        def get(self, *args, **kwargs):
+            raise httpx.ConnectError("connection refused")
+
+    def _cached_page(self, url: str, age_days: int) -> fetch.FetchedPage:
+        html = "<html><body>cached copy</body></html>"
+        fetched_at = fetch._iso(fetch._utc_now() - dt.timedelta(days=age_days))
+        return fetch.FetchedPage(
+            url=url,
+            final_url=url,
+            status_code=200,
+            fetched_at=fetched_at,
+            etag=None,
+            last_modified=None,
+            content_hash=fetch._content_hash(html),
+            html=html,
+        )
+
+    def test_stale_if_error_serves_recent_cache_and_records_error(self):
+        url = "https://example.test/card"
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_HTTP_CACHE_DIR": tmp}):
+            cache = fetch.PageCache()
+            cache.put(self._cached_page(url, age_days=2))
+            sink: dict[str, str] = {}
+
+            page = fetch.fetch_page(url, cache=cache, client=self._FailingClient(), error_sink=sink)
+
+        self.assertIsNotNone(page)
+        self.assertEqual(page.cache_status, "stale-if-error")
+        self.assertIn(url, sink)
+        self.assertIn("ConnectError", sink[url])
+
+    def test_stale_if_error_cache_beyond_age_cap_is_not_served(self):
+        url = "https://example.test/card"
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WEWARDS_HTTP_CACHE_DIR": tmp}):
+            cache = fetch.PageCache()
+            cache.put(self._cached_page(url, age_days=fetch.STALE_IF_ERROR_MAX_AGE_DAYS + 6))
+            sink: dict[str, str] = {}
+
+            page = fetch.fetch_page(url, cache=cache, client=self._FailingClient(), error_sink=sink)
+
+        self.assertIsNone(page)
+        self.assertIn(url, sink)
+
+    def test_degraded_source_does_not_bump_last_verified(self):
+        db = self._session()
+        url = "https://www.capitalone.com/credit-cards/venture-x"
+        product = models.CardProduct(
+            issuer="Capital One",
+            product_name="Capital One Venture X Rewards Credit Card",
+            source_url=url,
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        row = schedule.extract.OfferScanRow(
+            issuer=product.issuer,
+            card_name=product.product_name,
+            source_url=url,
+            product_url=url,
+            offer_status="unknown",
+            confidence=0.92,
+            found=True,
+            evidence_snippets={"source": ["Capital One Venture X Rewards Credit Card source check."]},
+        )
+
+        result = schedule._apply_scan_row(
+            db, product, row, degraded_source_urls={schedule._normalize_url(url)}
+        )
+
+        self.assertIsNone(product.last_verified)
+        self.assertFalse(result.get("verified_source"))
+
+    def test_run_refresh_surfaces_per_url_fetch_failures(self):
+        db = self._session()
+        product = models.CardProduct(
+            issuer="Test Bank",
+            product_name="Unreachable Card",
+            source_url="https://example.test/unreachable-card",
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        def fake_fetch_many(urls, error_sink=None, **kwargs):
+            if error_sink is not None:
+                for url in urls:
+                    error_sink[url] = "ConnectError: connection refused"
+            return {}
+
+        with patch.object(schedule.fetch, "fetch_many_pages", side_effect=fake_fetch_many):
+            result = schedule.run_refresh(
+                db,
+                product_ids=[product.id],
+                limit=None,
+                use_web_search=False,
+                llm_fallback=False,
+                include_incomplete=True,
+                force=True,
+                refresh_valuations=False,
+            )
+
+        fetch_failures = [e for e in result["errors"] if e.get("product") == "fetch"]
+        self.assertTrue(fetch_failures)
+        self.assertIn("ConnectError", fetch_failures[0]["error"])
+        self.assertTrue(fetch_failures[0]["url"].startswith("https://"))
+
+
+class PeakResearchRotationTests(unittest.TestCase):
+    def _session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    def test_cooldown_skips_recent_attempts_and_prefers_never_attempted(self):
+        db = self._session()
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        recently_attempted = models.CardProduct(
+            issuer="Chase", product_name="Recently Attempted Card",
+            peak_research_attempted_at=now - dt.timedelta(days=2),
+        )
+        never_attempted = models.CardProduct(
+            issuer="Chase", product_name="Never Attempted Card",
+        )
+        stale_attempt = models.CardProduct(
+            issuer="Chase", product_name="Old Attempt Card",
+            peak_research_attempted_at=now - dt.timedelta(days=30),
+        )
+        db.add_all([recently_attempted, never_attempted, stale_attempt])
+        db.commit()
+        for product in (recently_attempted, never_attempted, stale_attempt):
+            db.refresh(product)
+
+        queried: list[int] = []
+
+        def fake_run_searches(plan, max_uses=None, **kwargs):
+            queried.extend(q.product_id for q in plan)
+            return {}, {}, [], []
+
+        with patch.object(peak_research.research_resolver, "run_searches", side_effect=fake_run_searches):
+            report = peak_research.research_missing_peaks(db, limit=2)
+
+        self.assertEqual(report["cooldown_skipped"], 1)
+        self.assertEqual(report["checked"], 2)
+        # Never-attempted first, then the oldest attempt; the recent attempt
+        # is skipped entirely.
+        self.assertEqual(queried, [never_attempted.id, stale_attempt.id])
+        db.refresh(never_attempted)
+        db.refresh(recently_attempted)
+        self.assertIsNotNone(never_attempted.peak_research_attempted_at)
+        self.assertEqual(
+            recently_attempted.peak_research_attempted_at.date(),
+            (now - dt.timedelta(days=2)).date(),
+        )
+
+    def test_search_outage_does_not_burn_peak_cooldown(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Outage Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        def failing_run_searches(plan, max_uses=None, **kwargs):
+            return {}, {}, [{"product": "research_search_batch", "error": "search down"}], []
+
+        with patch.object(peak_research.research_resolver, "run_searches", side_effect=failing_run_searches):
+            report = peak_research.research_missing_peaks(db, limit=1)
+
+        db.refresh(product)
+        self.assertIsNone(product.peak_research_attempted_at)
+        self.assertEqual(report["skipped"][0]["reason"], "no_research_text")
+
+    def test_peak_finding_confidence_is_stored_raw(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Chase Sapphire Preferred Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        def fake_run_searches(plan, max_uses=None, **kwargs):
+            return (
+                {
+                    q.query: research_resolver.QueryResult(
+                        query=q.query,
+                        text="Doctor of Credit recorded a peak of 90,000 points for the Sapphire Preferred.",
+                        sources=[],
+                    )
+                    for q in plan
+                },
+                {},
+                [],
+                [],
+            )
+
+        finding = peak_research.PeakFinding(
+            found=True,
+            peak_points=90000,
+            source_url="https://www.doctorofcredit.com/sapphire-preferred-90k",
+            quote="a peak of 90,000 points",
+            confidence=0.55,
+        )
+
+        with patch.object(peak_research.research_resolver, "run_searches", side_effect=fake_run_searches):
+            with patch.object(peak_research, "_extract_peak", return_value=finding):
+                report = peak_research.research_missing_peaks(db, limit=1)
+
+        self.assertEqual(report["filled_count"], 1)
+        evidence = [
+            e for e in db.scalars(select(models.IngestionEvidence)).all()
+            if e.field == "peak_offer_points"
+        ]
+        self.assertTrue(evidence)
+        # Raw model confidence, not max(confidence, 0.8).
+        self.assertEqual(evidence[0].confidence, 0.55)
+        changes = [
+            c for c in db.scalars(select(models.ProposedChange)).all()
+            if c.field == "peak_offer_points"
+        ]
+        self.assertTrue(changes)
+        self.assertEqual(changes[0].confidence, 0.55)
+
+    def test_uncited_peak_finding_is_skipped_not_attributed(self):
+        db = self._session()
+        product = models.CardProduct(issuer="Chase", product_name="Chase Sapphire Preferred Card")
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+
+        def fake_run_searches(plan, max_uses=None, **kwargs):
+            return (
+                {
+                    q.query: research_resolver.QueryResult(
+                        query=q.query,
+                        text="A peak of 90,000 points was recorded.",
+                        sources=[{"url": "https://www.doctorofcredit.com/roundup", "title": "roundup"}],
+                    )
+                    for q in plan
+                },
+                {},
+                [],
+                [],
+            )
+
+        finding = peak_research.PeakFinding(
+            found=True,
+            peak_points=90000,
+            source_url=None,  # the extractor could not cite a URL
+            quote="a peak of 90,000 points",
+            confidence=0.9,
+        )
+
+        with patch.object(peak_research.research_resolver, "run_searches", side_effect=fake_run_searches):
+            with patch.object(peak_research, "_extract_peak", return_value=finding):
+                report = peak_research.research_missing_peaks(db, limit=1)
+
+        self.assertEqual(report["filled_count"], 0)
+        self.assertEqual(report["skipped"][0]["reason"], "no_cited_source_url")
+        db.refresh(product)
+        self.assertIsNone(product.peak_offer_points)
 
 
 if __name__ == "__main__":

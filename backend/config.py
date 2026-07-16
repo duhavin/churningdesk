@@ -83,6 +83,9 @@ WAIT_THRESHOLD: int = int(os.getenv("WAIT_THRESHOLD", "50"))
 MIN_APPLY_VALUE: float = float(os.getenv("MIN_APPLY_VALUE", "600"))
 MIN_APPLY_POINTS: int = int(os.getenv("MIN_APPLY_POINTS", "50000"))
 MIN_WATCH_VALUE: float = float(os.getenv("MIN_WATCH_VALUE", "300"))
+# Points-first travel maximization: cash-only offers stay tracked and honestly
+# valued, but are demoted out of the actionable queue by default.
+POINTS_FIRST: bool = os.getenv("POINTS_FIRST", "true").lower() in ("1", "true", "yes")
 EXCEPTIONAL_PEAK_POINTS: int = int(os.getenv("EXCEPTIONAL_PEAK_POINTS", "150000"))
 EXCEPTIONAL_FIRST_YEAR_VALUE: float = float(os.getenv("EXCEPTIONAL_FIRST_YEAR_VALUE", "800"))
 MAX_APPS_PER_QUARTER: int = int(os.getenv("MAX_APPS_PER_QUARTER", "4"))

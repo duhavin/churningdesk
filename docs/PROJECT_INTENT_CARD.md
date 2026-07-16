@@ -1,6 +1,6 @@
 # WEwards Project Intent Card
 
-Last updated: 2026-06-27 00:30 -07:00
+Last updated: 2026-07-16
 
 Purpose: compact guardrail against within-project drift. This file should be
 loaded before broad planning, UI/data changes, specialist handoffs, or claims
@@ -12,6 +12,12 @@ WEwards is a local, household-aware credit-card churning decision engine for
 Davin's personal use. It should turn private household state plus sourced
 public card data into accurate, explainable next actions for applying, waiting,
 referring, using benefits, renewing, downgrading, or cancelling.
+
+Owner goal (stated 2026-07-16): a **fully autonomous** churning decision engine
+with accurate, up-to-date information — optimal suggestions and pipeline per
+individual plus household synergy and referrals, **maximizing transferable
+points for travel**. Data verification is automated (corroboration gates, not a
+human review queue); Davin should never have to verify ingested data himself.
 
 The product is not a generic card catalog, a raw data dump, or an agent that
 sounds confident without source truth. The deliverable is a trustworthy

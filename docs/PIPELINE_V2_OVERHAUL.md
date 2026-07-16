@@ -1,9 +1,19 @@
 # Pipeline V2 Overhaul
 
-**Status:** In progress  
-**Branch:** `rebuild/lean-v0.1`  
+**Status:** Complete — shipped on `main` (the `rebuild/lean-v0.1` branch named below no
+longer exists; all six changes were verified present on `main` in the 2026-07-16 audit)  
 **Author:** Davin (initiated 2026-06-27)  
 **Scope:** WEwards backend logic only — no frontend changes, no data migration, no new API routes
+
+> **2026-07-16 corrections** (audit + fix pass): the shipped `_annual_benefit_value`
+> annualizes monthly ×12 / quarterly ×4 / semiannual ×2 rather than excluding monthly text
+> (the code is better than the change-4 spec below; the doc's "$10 per month → excluded"
+> test would fail). Change 6's `family_route`/route-labeling requirement and change 2's
+> visible utilization drivers were initially missing and are now implemented. Re-bonus
+> windows (change 5) are now also enforced on the apply path in `eligibility()`, not just
+> requeue. Test count grew from 112 → 227; the six changes now have direct regression
+> tests in `test_household_ordering.py`, `test_eligibility_rules.py`,
+> `test_pipeline_actions.py`, and `test_scoring_values.py`.
 
 ---
 

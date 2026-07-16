@@ -17,6 +17,8 @@ Hard rules:
 """
 from __future__ import annotations
 
+import datetime as dt
+import os
 import re
 from urllib.parse import urlparse
 
@@ -24,8 +26,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config, models
+from .. import config, models, source_quality
 from . import extract, research_resolver, validate
+
+# Rotation + cooldown: without it the first N peak-less products in table
+# order burn LLM calls every refresh while later cards starve.
+PEAK_RESEARCH_COOLDOWN_DAYS = int(os.getenv("WEWARDS_PEAK_RESEARCH_COOLDOWN_DAYS", "7"))
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
 
 
 class PeakFinding(BaseModel):
@@ -47,12 +57,14 @@ def _number_in_quote(points: int, quote: str) -> bool:
 
 
 def _trusted_peak_source(url: str | None) -> bool:
-    host = (urlparse(url or "").hostname or "").lower().removeprefix("www.")
+    host = (urlparse(url or "").hostname or "").lower()
     if not host:
         return False
-    if host.endswith(validate.PEAK_TRUSTED_HOSTS):
+    # Strict host matching: notdoctorofcredit.com and purchase.com must fail;
+    # sub.chase.com must pass.
+    if source_quality.host_in(host, validate.PEAK_TRUSTED_HOSTS):
         return True
-    return any(host.endswith(domain) for domain in research_resolver.ISSUER_DOMAINS.values())
+    return source_quality.host_in(host, research_resolver.ISSUER_DOMAINS.values())
 
 
 def _extract_peak(product: models.CardProduct, research_text: str) -> PeakFinding | None:
@@ -82,14 +94,35 @@ def _extract_peak(product: models.CardProduct, research_text: str) -> PeakFindin
 
 
 def research_missing_peaks(db: Session, *, limit: int | None = None) -> dict:
-    """Resolve peak_offer_points for cards missing it. Returns a report."""
-    products = list(
+    """Resolve peak_offer_points for cards missing it. Returns a report.
+
+    Candidate rotation (2026-07-16): products attempted within
+    PEAK_RESEARCH_COOLDOWN_DAYS are skipped, never-attempted products go
+    first, then the oldest attempts — so unresolvable cards stop burning LLM
+    calls every refresh and later cards are no longer starved.
+    """
+    now = _utcnow()
+    all_missing = list(
         db.scalars(
             select(models.CardProduct).where(models.CardProduct.peak_offer_points.is_(None))
         ).all()
     )
-    if limit:
-        products = products[:limit]
+    candidates = []
+    cooldown_skipped = 0
+    for product in all_missing:
+        attempted = product.peak_research_attempted_at
+        if attempted is not None and (now - attempted).days < PEAK_RESEARCH_COOLDOWN_DAYS:
+            cooldown_skipped += 1
+            continue
+        candidates.append(product)
+    candidates.sort(
+        key=lambda p: (
+            p.peak_research_attempted_at is not None,
+            p.peak_research_attempted_at or dt.datetime.min,
+            p.id or 0,
+        )
+    )
+    products = candidates[:limit] if limit else candidates
 
     filled: list[dict] = []
     skipped: list[dict] = []
@@ -100,15 +133,18 @@ def research_missing_peaks(db: Session, *, limit: int | None = None) -> dict:
             continue
         results, _stats, errors, _warnings = research_resolver.run_searches(plan, max_uses=2)
         text = ""
-        sources: list[str] = []
         for query in plan:
             hit = results.get(query.query)
             if hit:
                 text += ("\n" + (hit.text or ""))
-                sources.extend(s.get("url", "") for s in (hit.sources or []) if isinstance(s, dict))
         if not text.strip():
+            if not errors:
+                # A real (non-outage) empty result still counts as an attempt;
+                # a search outage must not burn the cooldown.
+                product.peak_research_attempted_at = now
             skipped.append({"product": product.product_name, "reason": "no_research_text"})
             continue
+        product.peak_research_attempted_at = now
 
         finding = _extract_peak(product, text)
         if not finding or not finding.found or not finding.peak_points:
@@ -118,7 +154,13 @@ def research_missing_peaks(db: Session, *, limit: int | None = None) -> dict:
         if not _number_in_quote(finding.peak_points, quote):
             skipped.append({"product": product.product_name, "reason": "quote_does_not_contain_number"})
             continue
-        source_url = finding.source_url or (sources[0] if sources else None)
+        # Only the URL the extractor actually cites for the quote counts.
+        # Falling back to the research pass's first source would attribute the
+        # peak to a page that may never have stated it.
+        source_url = finding.source_url
+        if not source_url:
+            skipped.append({"product": product.product_name, "reason": "no_cited_source_url"})
+            continue
         if not _trusted_peak_source(source_url):
             skipped.append({"product": product.product_name, "reason": "untrusted_source", "source": source_url})
             continue
@@ -132,7 +174,9 @@ def research_missing_peaks(db: Session, *, limit: int | None = None) -> dict:
 
         ext = extract.OfferExtraction(
             found=True,
-            confidence=max(finding.confidence, 0.8),
+            # Raw model confidence — the deterministic trusted-source gates
+            # above decide adoption, not an inflated confidence floor.
+            confidence=finding.confidence,
             peak_offer_points=finding.peak_points,
             peak_offer_min_spend=finding.peak_min_spend,
             peak_offer_date=finding.seen_date,
@@ -158,6 +202,7 @@ def research_missing_peaks(db: Session, *, limit: int | None = None) -> dict:
     auto = validate.auto_resolve_pending_changes(db)
     return {
         "checked": len(products),
+        "cooldown_skipped": cooldown_skipped,
         "filled": filled,
         "filled_count": len(filled),
         "skipped": skipped,

@@ -102,6 +102,9 @@ class ResearchResolution:
     stats: dict
     errors: list[dict] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
+    # URLs whose content came from stale-if-error cache during this pass; the
+    # caller must not treat rows from them as fresh source verification.
+    degraded_source_urls: list[str] = field(default_factory=list)
 
 
 def _utcnow() -> dt.datetime:
@@ -354,10 +357,12 @@ def _is_public_research_url(url: str | None) -> bool:
 def _source_kind(url: str | None, issuer: str | None) -> str:
     host = (urlparse(url or "").hostname or "").lower()
     issuer_domain = _issuer_domain(issuer)
-    if issuer_domain and issuer_domain in host:
+    # Strict host matching: "purchase.com" must not read as chase.com and
+    # "notdoctorofcredit.com" must not read as Doctor of Credit.
+    if issuer_domain and source_quality.host_matches(host, issuer_domain):
         return "issuer"
     for marker, kind in SOURCE_HOSTS.items():
-        if marker in host:
+        if source_quality.host_matches(host, marker):
             return kind
     return "generic"
 
@@ -562,7 +567,6 @@ def _research_text_snippets(
 ) -> list[str]:
     snippets: list[str] = []
     seen: set[str] = set()
-    source = source_urls[0] if source_urls else None
     terms = (
         "welcome",
         "bonus",
@@ -600,7 +604,11 @@ def _research_text_snippets(
             if key in seen:
                 continue
             seen.add(key)
-            prefix = f"src={source or 'cited_web_research'} p=2 adapter=web_research_text"
+            # These lines come from research-pass TEXT, not a fetched page — no
+            # specific URL is known to have stated them. Label them research-
+            # derived (cited=false) instead of attributing the pass's first
+            # source; such rows must never count as an independent host.
+            prefix = "src=research:web_search cited=false p=2 adapter=web_research_text"
             snippets.append(f"{prefix}\n{compact[:SNIPPET_CHARS]}")
             if len(snippets) >= MAX_RESEARCH_SNIPPETS:
                 return snippets
@@ -804,7 +812,8 @@ def resolve_products(
         sources_by_product[product_id] = list(dict.fromkeys(urls))
 
     all_urls = list(dict.fromkeys(url for urls in sources_by_product.values() for url in urls))
-    fetched_pages = fetch.fetch_many_pages(all_urls) if all_urls else {}
+    fetch_errors: dict[str, str] = {}
+    fetched_pages = fetch.fetch_many_pages(all_urls, error_sink=fetch_errors) if all_urls else {}
     detail_urls_by_product = _discover_detail_urls(products, fetched_pages, sources_by_product)
     detail_urls = list(dict.fromkeys(url for urls in detail_urls_by_product.values() for url in urls))
     if detail_urls:
@@ -813,7 +822,20 @@ def resolve_products(
             sources_by_product[product_id] = list(dict.fromkeys(sources_by_product[product_id]))
         missing_detail_urls = [url for url in detail_urls if url not in fetched_pages]
         if missing_detail_urls:
-            fetched_pages.update(fetch.fetch_many_pages(missing_detail_urls))
+            fetched_pages.update(fetch.fetch_many_pages(missing_detail_urls, error_sink=fetch_errors))
+    errors.extend(
+        {"product": "research_fetch", "url": url, "error": err}
+        for url, err in sorted(fetch_errors.items())
+    )
+    degraded_source_urls = sorted(
+        {
+            candidate
+            for url, page in fetched_pages.items()
+            if page.cache_status == "stale-if-error"
+            for candidate in (url, page.final_url)
+            if candidate
+        }
+    )
     parsed_pages = {url: static_parse.parse_page(page) for url, page in fetched_pages.items()}
     cache_hits = sum(1 for page in fetched_pages.values() if page.from_cache)
 
@@ -923,4 +945,10 @@ def resolve_products(
         "cards_resolved": resolved,
         "cards_needs_data": needs_data,
     }
-    return ResearchResolution(product_results=product_results, stats=stats, errors=errors, warnings=warnings)
+    return ResearchResolution(
+        product_results=product_results,
+        stats=stats,
+        errors=errors,
+        warnings=warnings,
+        degraded_source_urls=degraded_source_urls,
+    )

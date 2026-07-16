@@ -42,16 +42,22 @@ Wrong data = wrong card path. Data quality is the linchpin of the whole engine.
   offers, spend, annual fee, peaks, benefits, earn rates, and referrals.
 - The LLM only receives compact snippets batched across cards. Full raw pages are not the
   normal extraction payload.
-- Run cited web search **only** when a card is **stale AND** unresolved/incomplete after the
+- Run cited web search when a card is **stale AND** unresolved/incomplete after the
   cheap static + LLM passes (i.e. "out of date and hard to find"), and **not more often than
-  a cooldown**.
+  a cooldown**. Web search and the rendered (Crawl4AI) fallback are **enabled by default**
+  for refreshes (owner decision 2026-07-16): Crawl4AI is the primary scraper and the
+  stale-gate + per-card cooldowns bound the cost. Peak research rotates candidates via
+  `peak_research_attempted_at` with its own cooldown so unresolvable cards cannot burn
+  repeated LLM passes or starve the rest of the catalog.
 - Benefit/multiplier gaps for priority cards use a separate supplemental cooldown so held
   cards can be prioritized without repeatedly re-searching the same unresolved gap.
 - When it resolves a card: **cache the real cited source** on `product.source_url`, log every
   field to `IngestionEvidence`, and (when implemented) **promote** good cited offer URLs to
   `SourceConfig` so future refreshes fetch them statically. `PageCache` then makes repeats
   near-free. One deep pass → cheap forever after.
-- Default refreshes do **not** web-search. It's a deliberate "deep refresh."
+- Every value adopted from research must carry the **actual citing URL**; values whose
+  citing source is unknown are labeled research-derived (`research:*`) and never count as
+  an independent corroborating host.
 - Detailed benefit-completeness backfill is prioritized for cards the household actually
   holds. Non-held catalog cards may still retain already-sourced benefits in Card Plan, but
   missing benefit details should not force extra LLM/web work unless a user holds the card.
@@ -69,11 +75,29 @@ Wrong data = wrong card path. Data quality is the linchpin of the whole engine.
 - **Quality-gating**: obvious parser regressions are rejected before review: generic
   co-brand currency downgrades, raw copied benefit/article fragments, and category maps that
   collapse existing earn/use coverage.
-- **Delta-gating**: first sight commits. High-confidence official issuer product pages can
-  auto-adopt current public offer terms, annual fee, minimum spend, and spend window with
-  evidence. Broad, conflicting, ambiguous, or unsupported large offer changes (>
-  `OFFER_DELTA_THRESHOLD`) and any eligibility-rule change → `ProposedChange` review queue.
-  Peak is monotonic (raise freely; any decrease → review).
+- **Delta-gating**: first sight commits (after plausibility-range and unit checks — a
+  value with an unknown unit is never assumed to be points). High-confidence official
+  issuer product pages can auto-adopt current public offer terms, annual fee, minimum
+  spend, and spend window with evidence. Broad, conflicting, ambiguous, or unsupported
+  large offer changes (> `OFFER_DELTA_THRESHOLD`) and any eligibility-rule change →
+  `ProposedChange`, resolved **autonomously** (below). Peak is monotonic (raise freely;
+  any decrease → review).
 - **Never fabricate.** Unknown/unsupported → `NEEDS DATA`. Do not infer offer amounts from
   model memory and present them as fact.
-- **Human verification** is the final check for offers/rules that drive the pipeline.
+- **Autonomous verification** is the final check (owner doctrine 2026-07-16 — no human
+  review queue). `auto_resolve_pending_changes` approves a proposal only with real
+  corroboration; the system converges without a human in the loop:
+  - **Offer deltas**: approved when backed by an official-issuer or peak-trusted host
+    (strict host matching — no lookalike-domain suffixes), a second independent host with
+    the same value, or a later refresh re-extracting the same value. The proposing
+    extraction's own evidence can never approve itself. Uncorroborated proposals expire
+    and auto-reject after `WEWARDS_PENDING_CHANGE_EXPIRY_DAYS` (default 14) with a
+    retryable reason so future refreshes can re-verify.
+  - **Eligibility-rule changes** (`eligibility_tags`, `reports_to_personal_credit`):
+    approved only from an official issuer domain or ≥2 independent hosts at high
+    confidence; otherwise auto-rejected immediately (old value kept, retryable on future
+    refreshes). Never rubber-stamped, never left waiting on a human.
+  - Products with pending changes still refresh (only identical re-proposals are deduped),
+    so corroboration can arrive on the next pass instead of freezing.
+  - Fetch honesty feeds this: stale-if-error cache is age-capped, per-URL fetch failures
+    surface in refresh errors, and error-served content never bumps `last_verified`.

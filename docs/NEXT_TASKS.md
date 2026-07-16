@@ -15,10 +15,13 @@ Keep the core household decision loop reliable and professional:
 
 ## Near-Term Work Candidates
 
-0. Run a catalog refresh so the new referral research query populates
-   `referral_bonus_points` (0/43 before 2026-07-06 — the query type didn't
-   exist) and re-fills peak targets under the hardened text gates. Web-search
-   cost applies; run when Davin wants current data.
+0. Redeploy the tailnet container (workspace `/docker` flow) so the hosted
+   instance runs the 2026-07-16 fix pass — the container still runs the old
+   auto-resolve logic until rebuilt. Then run a catalog refresh: referral
+   bonuses are populated on only 1 of the ~9 household-held products (the side
+   referrals actually pay on — Davin confirmed household-side is what matters),
+   and the refresh now runs under the hardened autonomous-verification gates.
+   Web-search cost applies.
 
 1. Improve data-quality visibility in Card Universe and user-facing `NEEDS DATA` states.
 2. Tighten Dashboard/Pipeline/Card Plan surfaces so the next action and binding

@@ -326,6 +326,57 @@ def _batch_label(batch: list) -> str | None:
     return f"{first} + {len(products) - 1} more"
 
 
+# Phrases that can mean "this product is closed to new applicants" — but only
+# when they appear in application/offer context. "No longer available" inside
+# unrelated benefit copy ("lounge access is no longer available at ...") must
+# never close a card.
+_CLOSED_PHRASES = (
+    "closed to new applicants",
+    "no longer accepting applications",
+    "no longer available",
+    "stopped accepting applications",
+    "not accepting applications",
+)
+_APPLICATION_CONTEXT_TERMS = (
+    "application",
+    "applicant",
+    "apply",
+    "new cardmember",
+    "new card member",
+    "new customer",
+    "this card",
+    "this product",
+)
+_CLOSED_CONTEXT_WINDOW_CHARS = 160
+
+
+def _closed_phrase_in_application_context(
+    text: str | None,
+    product: models.CardProduct | None = None,
+) -> bool:
+    """True when a closed/discontinued phrase appears NEAR application/offer
+    context (application terms or the product's own name), not just anywhere."""
+    low = (text or "").lower()
+    if not low:
+        return False
+    name_tokens = _identity_tokens(product.product_name) if product is not None else set()
+    for phrase in _CLOSED_PHRASES:
+        start = 0
+        while True:
+            idx = low.find(phrase, start)
+            if idx == -1:
+                break
+            window = low[max(0, idx - _CLOSED_CONTEXT_WINDOW_CHARS): idx + len(phrase) + _CLOSED_CONTEXT_WINDOW_CHARS]
+            if any(term in window for term in _APPLICATION_CONTEXT_TERMS):
+                return True
+            if name_tokens:
+                window_tokens = _identity_tokens(window)
+                if len(name_tokens & window_tokens) >= min(2, len(name_tokens)):
+                    return True
+            start = idx + len(phrase)
+    return False
+
+
 def _eligibility_tags(text: str | None) -> list[str] | None:
     if not text:
         return None
@@ -339,22 +390,23 @@ def _eligibility_tags(text: str | None) -> list[str] | None:
         tags.append("sapphire_48mo")
     if "24 month" in low:
         tags.append("bonus_24mo")
-    if any(
-        phrase in low
-        for phrase in (
-            "closed to new applicants",
-            "no longer accepting applications",
-            "no longer available",
-            "stopped accepting applications",
-            "not accepting applications",
-        )
-    ):
+    if _closed_phrase_in_application_context(text):
         tags.append("closed_to_new_applicants")
     return tags or None
 
 
 def _is_cash_unit(unit: str | None) -> bool:
     return any(k in (unit or "").lower() for k in ("cash", "statement credit", "dollar"))
+
+
+def _is_points_unit(unit: str | None) -> bool:
+    """True only for an explicitly points-like unit. Unknown/missing units are
+    NOT points — a "$500 referral" mis-parsed without a unit must never commit
+    as 500 points."""
+    low = (unit or "").lower()
+    if not low or _is_cash_unit(low):
+        return False
+    return any(k in low for k in ("point", "pts", "mile", "avios", "skymiles", "aadvantage"))
 
 
 def _earn_multipliers(value: dict[str, float] | None) -> list[extract.EarnMultiplier] | None:
@@ -370,21 +422,30 @@ def _earn_multipliers(value: dict[str, float] | None) -> list[extract.EarnMultip
 
 
 def _row_to_extraction(row: extract.OfferScanRow) -> extract.OfferExtraction:
+    # Unit discipline: a bare number with an unknown unit is UNVERIFIED, not
+    # points. It is dropped here and the row is flagged for review, so the
+    # value can only land once a re-extraction states the unit.
+    unit_unknown_notes: list[str] = []
     is_cash = _is_cash_unit(row.bonus_unit)
+    is_points = _is_points_unit(row.bonus_unit)
     current_offer_cash = float(row.bonus_amount) if row.bonus_amount is not None and is_cash else None
     current_offer_points = (
         int(row.bonus_amount)
-        if row.bonus_amount is not None and not is_cash
+        if row.bonus_amount is not None and is_points
         else None
     )
-    currency = "cash back" if is_cash else row.bonus_unit
+    if row.bonus_amount is not None and not is_cash and not is_points:
+        unit_unknown_notes.append("bonus_unit_unknown")
+    currency = "cash back" if is_cash else (row.bonus_unit if is_points else None)
 
     # Peak ("target/goal") is points-only — cash peaks don't drive peak_score.
     peak_offer_points = (
         int(row.peak_bonus_amount)
-        if row.peak_bonus_amount is not None and not _is_cash_unit(row.peak_bonus_unit)
+        if row.peak_bonus_amount is not None and _is_points_unit(row.peak_bonus_unit)
         else None
     )
+    if row.peak_bonus_amount is not None and peak_offer_points is None and not _is_cash_unit(row.peak_bonus_unit):
+        unit_unknown_notes.append("peak_bonus_unit_unknown")
     # Peak can never be below the current offer, but do not invent a historical
     # peak when the source only provides the current offer.
     if current_offer_points is not None and peak_offer_points is not None:
@@ -392,7 +453,7 @@ def _row_to_extraction(row: extract.OfferScanRow) -> extract.OfferExtraction:
 
     referral_bonus_points = (
         int(row.referral_bonus_amount)
-        if row.referral_bonus_amount is not None and not _is_cash_unit(row.referral_bonus_unit)
+        if row.referral_bonus_amount is not None and _is_points_unit(row.referral_bonus_unit)
         else None
     )
     referral_bonus_cash = (
@@ -400,6 +461,8 @@ def _row_to_extraction(row: extract.OfferScanRow) -> extract.OfferExtraction:
         if row.referral_bonus_amount is not None and _is_cash_unit(row.referral_bonus_unit)
         else None
     )
+    if row.referral_bonus_amount is not None and referral_bonus_points is None and referral_bonus_cash is None:
+        unit_unknown_notes.append("referral_bonus_unit_unknown")
 
     return extract.OfferExtraction(
         found=row.found,
@@ -430,7 +493,7 @@ def _row_to_extraction(row: extract.OfferScanRow) -> extract.OfferExtraction:
         source_priority=row.source_priority,
         evidence_snippets=row.evidence_snippets,
         changed_fields=row.changed_fields,
-        needs_review_reason=row.needs_review_reason,
+        needs_review_reason=row.needs_review_reason or ("; ".join(unit_unknown_notes) or None),
         source_url=row.source_url,
         product_url=row.product_url,
         fetched_at=row.fetched_at,
@@ -617,6 +680,7 @@ def _apply_scan_row(
     db: Session,
     product: models.CardProduct,
     row: extract.OfferScanRow,
+    degraded_source_urls: set[str] | None = None,
 ) -> dict:
     if row.found and _has_variant_conflict(product, f"{row.source_url or ''} {row.product_url or ''}"):
         return {
@@ -642,14 +706,14 @@ def _apply_scan_row(
             "scan_confidence": row.confidence,
             "offer_status": row.offer_status,
         }
-        _mark_safe_source_verified(product, row, result)
+        _mark_safe_source_verified(product, row, result, degraded_source_urls)
         return result
 
     ext = _row_to_extraction(row)
     applied = validate.apply_extraction(
         db, product, ext, row.source_url or row.product_url or "", commit=False
     )
-    _mark_safe_source_verified(product, row, applied)
+    _mark_safe_source_verified(product, row, applied, degraded_source_urls)
     row.changed_fields = list(dict.fromkeys(applied.get("committed", []) + applied.get("proposed", [])))
     applied.update(
         {
@@ -665,9 +729,15 @@ def _mark_safe_source_verified(
     product: models.CardProduct,
     row: extract.OfferScanRow,
     result: dict,
+    degraded_source_urls: set[str] | None = None,
 ) -> None:
     source_url = source_quality.normalize_url(row.source_url or row.product_url or product.source_url)
     if not source_url or not row.found or row.confidence < MIN_CONFIDENCE:
+        return
+    # Stale-if-error cache is a degraded read, not a verification: the live
+    # page was NOT observed, so last_verified must not be bumped from it.
+    if degraded_source_urls and _normalize_url(source_url) in degraded_source_urls:
+        result["note"] = result.get("note") or "source_fetch_failed_served_stale_cache"
         return
     if not source_quality.is_safe_product_source(
         product.issuer,
@@ -686,6 +756,17 @@ def _mark_safe_source_verified(
         result["verified_source"] = True
 
 
+def _degraded_source_urls(pages: dict[str, fetch.FetchedPage]) -> set[str]:
+    """Normalized URLs whose content came from stale-if-error cache."""
+    out: set[str] = set()
+    for url, page in pages.items():
+        if page.cache_status == "stale-if-error":
+            out.add(_normalize_url(url))
+            if page.final_url:
+                out.add(_normalize_url(page.final_url))
+    return out
+
+
 def _row_evidence_text(row: extract.OfferScanRow) -> str:
     pieces = [
         row.source_url,
@@ -701,22 +782,93 @@ def _row_evidence_text(row: extract.OfferScanRow) -> str:
     return " ".join(str(part or "") for part in pieces)
 
 
-def _is_closed_to_new_row(row: extract.OfferScanRow) -> bool:
+def _row_snippet_text(row: extract.OfferScanRow) -> str:
+    """Evidence COPY only (no URLs): URLs carry product tokens that would
+    fake application context around unrelated phrases."""
+    pieces = [row.eligibility_language, row.needs_review_reason]
+    for snippets in (row.evidence_snippets or {}).values():
+        if isinstance(snippets, list):
+            pieces.extend(str(item or "") for item in snippets)
+        elif snippets:
+            pieces.append(str(snippets))
+    return " ".join(str(part or "") for part in pieces)
+
+
+def _is_closed_to_new_row(row: extract.OfferScanRow, product: models.CardProduct | None = None) -> bool:
     tags = {str(tag).strip().lower() for tag in (row.eligibility_tags or [])}
     tags.update(str(tag).strip().lower() for tag in (_eligibility_tags(row.eligibility_language) or []))
     if "closed_to_new_applicants" in tags:
         return True
-    text = _row_evidence_text(row).lower()
-    return any(
-        phrase in text
-        for phrase in (
-            "closed to new applicants",
-            "no longer accepting applications",
-            "no longer available",
-            "stopped accepting applications",
-            "not accepting applications",
+    # Evidence-scoped: the phrase must sit in application/offer context (near
+    # application terms or the product name), never anywhere in the page copy.
+    return _closed_phrase_in_application_context(_row_snippet_text(row), product)
+
+
+def _propose_closed_to_new(
+    db: Session,
+    product: models.CardProduct,
+    row: extract.OfferScanRow,
+    source_url: str | None,
+    evidence_text: str,
+) -> dict:
+    """Route a non-official closed-to-new determination through the review
+    queue instead of direct-writing it. auto_resolve then verifies it
+    autonomously (official evidence or independent corroboration) and rejects
+    retryably otherwise — no human required, no unverified eligibility write."""
+    tags = list(dict.fromkeys([*(product.eligibility_tags or []), "closed_to_new_applicants"]))
+    serialized = json.dumps(tags)
+    proposed: list[str] = []
+    if not validate._matching_rejected_change_exists(db, product, "eligibility_tags", serialized):
+        existing = db.scalar(
+            select(models.ProposedChange).where(
+                models.ProposedChange.target_table == "card_product",
+                models.ProposedChange.target_id == product.id,
+                models.ProposedChange.field == "eligibility_tags",
+                models.ProposedChange.new_value == serialized,
+                models.ProposedChange.status == "pending",
+            )
+        )
+        if existing is None:
+            db.add(
+                models.ProposedChange(
+                    target_table="card_product",
+                    target_id=product.id,
+                    field="eligibility_tags",
+                    old_value=json.dumps(product.eligibility_tags),
+                    new_value=serialized,
+                    source_url=source_url,
+                    confidence=row.confidence,
+                    reason_code="closed_to_new_unofficial_source",
+                    review_note="Closed-to-new-applicants seen on a non-official source; needs official or independent corroboration.",
+                    risk_level="high",
+                    status="pending",
+                )
+            )
+        proposed.append("eligibility_tags")
+    db.add(
+        models.IngestionEvidence(
+            product_id=product.id,
+            field="eligibility_tags",
+            value_json=serialized,
+            source_url=source_url,
+            fetched_at=row.fetched_at,
+            content_hash=row.content_hash,
+            confidence=row.confidence,
+            evidence_snippets=(row.evidence_snippets or {}).get("eligibility_language") or [evidence_text[:350]],
+            offer_status=row.offer_status,
         )
     )
+    db.flush()
+    return {
+        "committed": [],
+        "proposed": proposed,
+        "rejected": [],
+        "evidence_recorded": 1,
+        "note": "closed_to_new_applicants_proposed_unofficial_source",
+        "source_url": source_url,
+        "scan_confidence": row.confidence,
+        "offer_status": row.offer_status,
+    }
 
 
 def _apply_closed_to_new_row(
@@ -724,7 +876,7 @@ def _apply_closed_to_new_row(
     product: models.CardProduct,
     row: extract.OfferScanRow,
 ) -> dict | None:
-    if row.offer_status != "expired" or not _is_closed_to_new_row(row):
+    if row.offer_status != "expired" or not _is_closed_to_new_row(row, product):
         return None
     source_url = source_quality.normalize_url(row.source_url or row.product_url or product.source_url)
     evidence_text = _row_evidence_text(row)
@@ -734,7 +886,9 @@ def _apply_closed_to_new_row(
         source_url,
         evidence_text,
     ):
-        return None
+        # Non-official source: never direct-write an eligibility rule; queue it
+        # for autonomous verification instead.
+        return _propose_closed_to_new(db, product, row, source_url, evidence_text)
 
     committed: list[str] = []
     tags = list(dict.fromkeys([*(product.eligibility_tags or []), "closed_to_new_applicants"]))
@@ -1006,19 +1160,6 @@ def _needs_public_data_backfill(product: models.CardProduct, held_for_benefit_ba
     )
 
 
-def _pending_review_fields(db: Session) -> dict[int, set[str]]:
-    rows = db.execute(
-        select(models.ProposedChange.target_id, models.ProposedChange.field).where(
-            models.ProposedChange.target_table == "card_product",
-            models.ProposedChange.status == "pending",
-        )
-    ).all()
-    out: dict[int, set[str]] = {}
-    for target_id, field in rows:
-        out.setdefault(target_id, set()).add(field)
-    return out
-
-
 def run_refresh(
     db: Session,
     issuer: str | None = None,
@@ -1121,19 +1262,13 @@ def run_refresh(
     def priority_benefit_gap(product: models.CardProduct) -> bool:
         return is_priority(product) and _needs_supplemental_backfill(product)
 
-    pending_fields_by_id = _pending_review_fields(db)
-    pending_ids = set(pending_fields_by_id)
-
-    def only_supplemental_pending(product: models.CardProduct) -> bool:
-        fields = pending_fields_by_id.get(product.id or 0, set())
-        return bool(fields) and fields.issubset(SUPPLEMENTAL_FIELDS)
-
-    products_without_pending = [
-        p
-        for p in all_products
-        if p.id not in pending_ids or priority_benefit_gap(p) or (is_priority(p) and only_supplemental_pending(p))
-    ]
-    skipped_pending = len(all_products) - len(products_without_pending)
+    # A pending ProposedChange must NOT block refreshing the product — the
+    # autonomous review loop depends on later refreshes to corroborate (or
+    # contradict) pending values. apply_extraction already skips re-proposing
+    # an identical pending field/value, and a matching re-extraction records
+    # fresh evidence that lets auto_resolve approve the pending change.
+    products_without_pending = list(all_products)
+    skipped_pending = 0
 
     stale_days = STALE_AFTER_DAYS if refresh_stale_days is None else refresh_stale_days
     if peak_backfill:
@@ -1183,7 +1318,8 @@ def run_refresh(
     source_pool = active_source_urls(db, source_urls)
     product_sources = product_source_urls(db, products)
     urls = _candidate_urls(products, source_pool, product_sources)
-    fetched_pages = fetch.fetch_many_pages(urls) if urls else {}
+    fetch_errors: dict[str, str] = {}
+    fetched_pages = fetch.fetch_many_pages(urls, error_sink=fetch_errors) if urls else {}
 
     results: list[dict] = []
     result_index: dict[int, int] = {}
@@ -1232,7 +1368,7 @@ def run_refresh(
                     product_sources[product_id] = list(dict.fromkeys(product_sources[product_id]))
                 missing_detail_urls = [url for url in detail_urls if url not in fetched_pages]
                 if missing_detail_urls:
-                    fetched_pages.update(fetch.fetch_many_pages(missing_detail_urls))
+                    fetched_pages.update(fetch.fetch_many_pages(missing_detail_urls, error_sink=fetch_errors))
                 resolver_stats["detail_urls_discovered"] += len(detail_urls)
                 resolver_stats["detail_urls_fetched"] += len([url for url in detail_urls if url in fetched_pages])
         except Exception as exc:
@@ -1242,6 +1378,13 @@ def run_refresh(
                     "message": str(exc),
                 }
             )
+    # Fetch failures are surfaced explicitly (url + error class) so a network
+    # failure is never mistaken for "the product is not on that page".
+    errors.extend(
+        {"product": "fetch", "url": url, "error": err}
+        for url, err in sorted(fetch_errors.items())
+    )
+    degraded_urls = _degraded_source_urls(fetched_pages)
     pages_by_url = {url: static_parse.parse_page(page) for url, page in fetched_pages.items()}
 
     def add_result(product: models.CardProduct, applied: dict, row: extract.OfferScanRow, engine: str) -> None:
@@ -1338,7 +1481,7 @@ def run_refresh(
             or (supplemental_shortcut and best.confidence >= MIN_CONFIDENCE)
         ) and not needs_llm_structure
         if can_shortcut:
-            applied = _apply_scan_row(db, product, best)
+            applied = _apply_scan_row(db, product, best, degraded_urls)
             deterministic_applied += 1
             strict_rows.append(best)
             add_result(product, applied, best, "static")
@@ -1400,7 +1543,7 @@ def run_refresh(
                     )
                     if schema_limit and fallback is not None:
                         row = extract.normalize_offer_scan_row(_fill_row_metadata(row, product, fallback))
-                        applied = _apply_scan_row(db, product, row)
+                        applied = _apply_scan_row(db, product, row, degraded_urls)
                         strict_rows.append(row)
                         add_result(product, applied, row, "static_schema_fallback")
                         if not applied.get("committed") and not applied.get("proposed"):
@@ -1437,7 +1580,7 @@ def run_refresh(
                         needs_review_reason="llm_identity_mismatch",
                     )
                 row = extract.normalize_offer_scan_row(_fill_row_metadata(row, product, fallback))
-                applied = _apply_scan_row(db, product, row)
+                applied = _apply_scan_row(db, product, row, degraded_urls)
                 strict_rows.append(row)
                 add_result(product, applied, row, "llm_batch")
                 if not applied.get("committed") and not applied.get("proposed"):
@@ -1497,6 +1640,7 @@ def run_refresh(
             if report.pages:
                 fetched_pages.update(report.pages)
                 pages_by_url.update({url: static_parse.parse_page(page) for url, page in report.pages.items()})
+                degraded_urls = _degraded_source_urls(fetched_pages)
             for product in rendered_raw_candidates:
                 candidate_urls = render_urls_by_product.get(product.id or 0, [])
                 if not candidate_urls or not any(url in report.pages for url in candidate_urls):
@@ -1511,7 +1655,7 @@ def run_refresh(
                 if not best:
                     continue
                 best = extract.normalize_offer_scan_row(_fill_row_metadata(best, product, None))
-                applied = _apply_scan_row(db, product, best)
+                applied = _apply_scan_row(db, product, best, degraded_urls)
                 strict_rows.append(best)
                 add_result(product, applied, best, "crawl4ai")
                 if applied.get("committed") or applied.get("proposed"):
@@ -1599,6 +1743,12 @@ def run_refresh(
         for batch in _chunks(candidates, web_batch_limit):
             publish_progress("web_search_batch", len(result_index), _batch_label(batch))
             attempted_at = _utcnow()
+            # Remember pre-attempt stamps: a batch-level failure must not burn
+            # the multi-day cooldown on a transient outage.
+            previous_stamps = {
+                product.id: (product.last_web_search_at, product.last_supplemental_search_at)
+                for product in batch
+            }
             for product in batch:
                 product.last_web_search_at = attempted_at
                 if priority_benefit_gap(product):
@@ -1617,8 +1767,16 @@ def run_refresh(
                 web_search_requests += int(resolution.stats.get("web_search_requests") or 0)
                 errors.extend(resolution.errors)
                 warnings.extend(resolution.warnings)
+                degraded_urls |= {
+                    _normalize_url(url) for url in getattr(resolution, "degraded_source_urls", []) or []
+                }
             except Exception as exc:
                 errors.append({"product": "web_search_batch", "error": str(exc)})
+                for product in batch:
+                    previous_web, previous_supplemental = previous_stamps.get(product.id, (None, None))
+                    product.last_web_search_at = previous_web
+                    product.last_supplemental_search_at = previous_supplemental
+                db.flush()
                 for product in batch:
                     row = extract.OfferScanRow(
                         issuer=product.issuer,
@@ -1706,7 +1864,7 @@ def run_refresh(
                     publish_progress("web_search_batch", len(result_index), _product_label(product))
                     continue
                 row.source_url = source
-                applied = _apply_scan_row(db, product, row)
+                applied = _apply_scan_row(db, product, row, degraded_urls)
                 if source and applied.get("committed") and source_quality.is_safe_product_source(
                     product.issuer,
                     product.product_name,
@@ -1878,10 +2036,13 @@ def backfill_valuations(db: Session) -> int:
         if not currency_key or currency_key not in requested_currencies or currency_key in seen_currencies:
             continue
         source_url = _normalize_url(cv.source_url) if _is_real_public_url(cv.source_url) else None
-        if source_url is None and source_urls:
-            source_url = _normalize_url(source_urls[0]) if _is_real_public_url(source_urls[0]) else None
         if source_url is None:
-            continue
+            if not source_urls:
+                continue  # uncited research pass — keep NEEDS DATA semantics
+            # The pass had citations but this valuation cannot be attributed to
+            # one: label it research-derived instead of smearing the batch's
+            # first source onto it. (Non-URL labels never satisfy host checks.)
+            source_url = "research:point-valuations"
         db.add(
             models.Valuation(
                 currency=requested_currencies[currency_key],

@@ -92,9 +92,12 @@ class CardProduct(Base):
 
     annual_fee: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Current public offer (scraped). `current_offer_override` is a manual entry
-    # for a targeted offer valid right now; it wins until a refresh re-confirms the
-    # public offer, at which point ingestion clears it (see validate.apply_extraction).
+    # Current public offer (scraped). `current_offer_override` is a manual
+    # correction of the PUBLIC offer (e.g. a value ingestion missed or got
+    # wrong); it wins until a refresh re-confirms the public offer, at which
+    # point ingestion clears it (see validate.apply_extraction). Personal
+    # targeted/invite-only offers are never stored here — they live in
+    # ManualTargetedOffer (PRIVATE).
     current_offer_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_offer_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_offer_cash: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -145,6 +148,9 @@ class CardProduct(Base):
     last_verified: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_web_search_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_supplemental_search_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # Peak-research rotation/cooldown: when this product last got a dedicated
+    # historic-peak research attempt (never-attempted products go first).
+    peak_research_attempted_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
@@ -168,7 +174,11 @@ class CardProduct(Base):
 
     @property
     def current_offer_effective(self) -> int | None:
-        """Manual targeted override wins over the scraped current offer."""
+        """Manual PUBLIC-offer correction wins over the scraped current offer.
+
+        Per-user targeted offers are tracked in ManualTargetedOffer (PRIVATE),
+        never in this PUBLIC column.
+        """
         return (
             self.current_offer_override
             if self.current_offer_override is not None

@@ -13,6 +13,8 @@ from urllib.parse import urlsplit, urlunsplit
 ISSUER_DOMAINS = {
     "american express": "americanexpress.com",
     "amex": "americanexpress.com",
+    "barclays": "barclaycardus.com",
+    "barclaycard": "barclaycardus.com",
     "chase": "chase.com",
     "capital one": "capitalone.com",
     "citi": "citi.com",
@@ -109,6 +111,31 @@ def source_host(url: str | None) -> str:
     return (urlsplit(normalize_url(url)).hostname or "").lower()
 
 
+def host_matches(host: str | None, domain: str | None) -> bool:
+    """Strict host-vs-domain match: exact host or dot-boundary subdomain.
+
+    ``notdoctorofcredit.com`` does NOT match ``doctorofcredit.com`` and
+    ``purchase.com`` does NOT match ``chase.com``; ``sub.chase.com`` does.
+    This is the single host-trust primitive — never use ``host.endswith(domain)``
+    or ``domain in host`` for trust decisions.
+    """
+    clean_host = (host or "").strip().lower().removeprefix("www.").rstrip(".")
+    clean_domain = (domain or "").strip().lower().removeprefix("www.").rstrip(".")
+    if not clean_host or not clean_domain:
+        return False
+    return clean_host == clean_domain or clean_host.endswith("." + clean_domain)
+
+
+def host_in(host: str | None, domains) -> bool:
+    """True when the host strictly matches any domain in ``domains``."""
+    return any(host_matches(host, domain) for domain in (domains or ()))
+
+
+def is_official_issuer_host(host: str | None) -> bool:
+    """True when the host strictly matches any known official issuer domain."""
+    return host_in(host, set(ISSUER_DOMAINS.values()))
+
+
 def _tokens(value: str | None) -> set[str]:
     text = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
     return {token for token in text.split() if token}
@@ -173,9 +200,7 @@ def has_variant_conflict(issuer: str | None, product_name: str | None, text: str
 
 
 def is_official_issuer_source(issuer: str | None, url: str | None) -> bool:
-    host = source_host(url)
-    domain = expected_issuer_domain(issuer)
-    return bool(domain and (host == domain or host.endswith("." + domain)))
+    return host_matches(source_host(url), expected_issuer_domain(issuer))
 
 
 def source_supports_product(

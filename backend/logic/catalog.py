@@ -477,6 +477,7 @@ def scored_catalog(
                 "value_known": s.value_known,
                 "peak_is_targeted": s.peak_is_targeted,
                 "is_exceptional": s.is_exceptional,
+                "cash_only": s.cash_only,
                 "data_quality_issues": quality_issues,
                 "decision_ready": not quality_blocks,
             }

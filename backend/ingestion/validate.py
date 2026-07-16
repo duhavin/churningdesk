@@ -2,7 +2,13 @@
 
   * First sight of a value (nothing to overwrite) commits with provenance.
   * A subsequent change beyond threshold (offer Δ > OFFER_DELTA_THRESHOLD, or
-    ANY eligibility-rule change) requires human approval.
+    ANY eligibility-rule change) goes to the ProposedChange queue.
+  * The queue is FULLY AUTONOMOUS (owner doctrine, 2026-07-16): the system
+    verifies proposals with real evidence checks (official-issuer or trusted
+    hosts, independent corroboration, later-refresh re-extraction). When a
+    change cannot be verified it keeps the old value and auto-rejects with a
+    retryable reason so a future refresh can re-propose with better evidence.
+    No human is required for the loop to stay accurate.
   * Small high-confidence updates may auto-commit when AUTO_COMMIT_SMALL_CHANGES.
 
 This module writes only to PUBLIC tables (CardProduct, ProposedChange).
@@ -11,13 +17,14 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from urllib.parse import urlparse
 import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .. import config, models, source_quality
@@ -60,6 +67,22 @@ NON_OFFER_SOURCE_TERMS = (
 
 HIGH_CONFIDENCE = 0.8
 OFFICIAL_AUTO_COMMIT_CONFIDENCE = 0.86
+# --- Autonomous review-queue tunables (env-overridable; config.py is owned by
+# another slice, so these live here as module constants). ---------------------
+# Eligibility changes: minimum per-source confidence for independent
+# corroboration, and how many distinct source hosts count as independent.
+ELIG_EVIDENCE_CONFIDENCE = float(os.getenv("WEWARDS_ELIG_EVIDENCE_CONFIDENCE", "0.8"))
+ELIG_INDEPENDENT_HOSTS_REQUIRED = int(os.getenv("WEWARDS_ELIG_INDEPENDENT_HOSTS", "2"))
+# Pending offer/peak changes that were never corroborated auto-reject after
+# this many days so the queue self-clears without a human.
+PENDING_CHANGE_EXPIRY_DAYS = int(os.getenv("WEWARDS_PENDING_CHANGE_EXPIRY_DAYS", "14"))
+# Rejections with these reason codes are the SYSTEM saying "not verified yet",
+# not a human saying "wrong" — they must not block a future refresh from
+# re-proposing the same value with better evidence.
+AUTO_RETRYABLE_REJECT_REASONS = (
+    "unverified_eligibility_auto_reject",
+    "offer_change_never_corroborated",
+)
 GENERIC_REWARD_CURRENCIES = {"points", "miles", "cash", "cash back", "cashback"}
 FIRST_SIGHT_FIELD_CONFIDENCE = {
     "currency": 0.7,
@@ -117,6 +140,10 @@ FIELD_EVIDENCE_ALIASES = {
         "current_offer_min_spend",
         "spend_requirement",
     ),
+    # Referral provenance parity: the scan schema emits referral evidence under
+    # "referral_bonus_amount" while CardProduct stores referral_bonus_points/cash.
+    "referral_bonus_points": ("referral_bonus_points", "referral_bonus_amount"),
+    "referral_bonus_cash": ("referral_bonus_cash", "referral_bonus_amount"),
 }
 FIELD_EVIDENCE_REQUIRED_FOR_COMMIT = set(FIELD_EVIDENCE_ALIASES)
 CURRENT_OFFER_FIELDS = {
@@ -375,7 +402,12 @@ def _matching_rejected_change_exists(
     field: str,
     serialized_value: str,
 ) -> bool:
-    """True when the same public product/field/value was already rejected."""
+    """True when the same public product/field/value was already rejected.
+
+    System-side "not verified yet" rejections (AUTO_RETRYABLE_REJECT_REASONS)
+    are excluded so future refreshes can re-propose the same value once better
+    evidence exists — otherwise the autonomous loop could never converge.
+    """
     if not product.id:
         return False
     return db.scalar(
@@ -385,6 +417,10 @@ def _matching_rejected_change_exists(
             models.ProposedChange.field == field,
             models.ProposedChange.new_value == serialized_value,
             models.ProposedChange.status == "rejected",
+            or_(
+                models.ProposedChange.reason_code.is_(None),
+                models.ProposedChange.reason_code.notin_(AUTO_RETRYABLE_REJECT_REASONS),
+            ),
         )
     ) is not None
 
@@ -921,6 +957,8 @@ def _scan_field_name(field: str) -> str:
         "current_offer_cash": "bonus_amount",
         "current_offer_min_spend": "spend_requirement",
         "current_offer_window_months": "spend_window_months",
+        "referral_bonus_points": "referral_bonus_amount",
+        "referral_bonus_cash": "referral_bonus_amount",
     }.get(field, field)
 
 
@@ -987,6 +1025,19 @@ def apply_extraction(
         )
         if review.action == "review" and decision == "commit":
             decision = "propose"
+        # Plausibility is enforced on EVERY commit path (first-sight and
+        # trusted auto-commit included), not only in the review queue. An
+        # implausible value routes to ProposedChange, where auto_resolve
+        # rejects it with an honest note.
+        if decision == "commit" and not _plausible(field, new_value):
+            decision = "propose"
+            review = ProposalReview(
+                action="propose",
+                reason_code="implausible_value",
+                review_note=f"Value {new_value!r} outside plausible range for {field}.",
+                risk_level="high",
+                quality_score=review.quality_score,
+            )
         if decision == "skip":
             _settle_pending_changes(db, product, field, old_value, normalized_source)
             continue
@@ -1098,6 +1149,51 @@ def _plausible(field: str, value) -> bool:
     return low <= number <= high
 
 
+def _evidence_host(url: str | None) -> str:
+    """Real hostname for evidence attribution, or "" for uncited/pseudo sources.
+
+    Research-derived labels like ``research:web_search`` yield "" so they can
+    never count as an independent host in corroboration checks.
+    """
+    parsed = urlparse(url or "")
+    if parsed.scheme not in ("http", "https"):
+        return ""
+    return (parsed.hostname or "").lower().removeprefix("www.")
+
+
+def _matching_evidence_rows(
+    db: Session,
+    product_id: int,
+    field: str,
+    serialized_value: str,
+    *,
+    min_confidence: float = 0.6,
+    max_age_days: int = 60,
+) -> list[models.IngestionEvidence]:
+    """Fresh evidence rows recording this exact value for the field/aliases.
+
+    Rows without created_at are treated as EXPIRED — unknown age is not proof.
+    """
+    aliases = set(FIELD_EVIDENCE_ALIASES.get(field, (field,))) | {field}
+    rows = db.scalars(
+        select(models.IngestionEvidence).where(
+            models.IngestionEvidence.product_id == product_id,
+            models.IngestionEvidence.field.in_(sorted(aliases)),
+        )
+    ).all()
+    cutoff = _utcnow() - dt.timedelta(days=max_age_days)
+    out: list[models.IngestionEvidence] = []
+    for row in rows:
+        if row.value_json != serialized_value:
+            continue
+        if (row.confidence or 0) < min_confidence:
+            continue
+        if row.created_at is None or row.created_at < cutoff:
+            continue
+        out.append(row)
+    return out
+
+
 def _evidence_backs_value(
     db: Session,
     product_id: int,
@@ -1109,42 +1205,113 @@ def _evidence_backs_value(
 ) -> bool:
     """True when a recent ingestion_evidence row records this exact value for
     the field (or a scan alias), optionally restricted to trusted hosts."""
-    aliases = set(FIELD_EVIDENCE_ALIASES.get(field, (field,))) | {field}
-    rows = db.scalars(
-        select(models.IngestionEvidence).where(
-            models.IngestionEvidence.product_id == product_id,
-            models.IngestionEvidence.field.in_(sorted(aliases)),
-        )
-    ).all()
-    cutoff = _utcnow() - dt.timedelta(days=max_age_days)
-    for row in rows:
-        if row.value_json != serialized_value:
-            continue
-        if (row.confidence or 0) < 0.6:
-            continue
-        created = row.created_at or cutoff
-        if created < cutoff:
-            continue
+    for row in _matching_evidence_rows(db, product_id, field, serialized_value, max_age_days=max_age_days):
         if trusted_hosts:
-            host = (urlparse(row.source_url or "").hostname or "").lower().removeprefix("www.")
-            issuer_official = source_quality.is_official_issuer_host(host) if hasattr(source_quality, "is_official_issuer_host") else False
-            if not (host.endswith(trusted_hosts) or issuer_official):
+            host = _evidence_host(row.source_url)
+            if not (
+                source_quality.host_in(host, trusted_hosts)
+                or source_quality.is_official_issuer_host(host)
+            ):
                 continue
         return True
     return False
 
 
-def auto_resolve_pending_changes(db: Session, *, commit: bool = True) -> dict:
-    """The system reviews its own queue so the household never has to.
+def _eligibility_change_verified(
+    db: Session,
+    product: models.CardProduct,
+    change: models.ProposedChange,
+) -> tuple[bool, str]:
+    """Autonomous verification for eligibility-rule changes (I1).
 
-    Approval requires the same things a careful human checks: recent recorded
-    evidence for the exact value, plausible magnitude, and for PEAK fields a
-    peak-trusted or official source plus peak >= the known current offer.
-    Structured text fields (benefits/uses/multipliers/downgrades) approve on
-    the strength of the hardened normalization gates that already run at
-    apply time. Anything that fails a hard check is rejected with a note;
-    genuinely unverifiable rows stay pending (rare).
+    Approve ONLY when the exact proposed value is backed by evidence from an
+    official issuer domain (strict host match), or by >= 2 INDEPENDENT source
+    hosts at high confidence. The proposing extraction's own evidence row can
+    never satisfy the independent path alone because it contributes one host.
     """
+    rows = _matching_evidence_rows(db, product.id, change.field, change.new_value or "null")
+    for row in rows:
+        if source_quality.is_official_issuer_source(product.issuer, row.source_url):
+            return True, "official_issuer_evidence"
+    independent_hosts = {
+        host
+        for row in rows
+        if (row.confidence or 0) >= ELIG_EVIDENCE_CONFIDENCE
+        for host in [_evidence_host(row.source_url)]
+        if host
+    }
+    if len(independent_hosts) >= ELIG_INDEPENDENT_HOSTS_REQUIRED:
+        return True, "independent_sources"
+    return False, "unverified"
+
+
+def _offer_change_corroborated(
+    db: Session,
+    product: models.CardProduct,
+    change: models.ProposedChange,
+) -> str | None:
+    """Corroboration basis for an offer-field proposal, or None (I2).
+
+    The proposing extraction's own evidence row (same host, recorded at or
+    before the proposal) is NOT corroboration — that would be circular
+    self-approval. Approval requires one of:
+      (a) evidence from an official-issuer or trusted host (strict match),
+      (b) the same value from a SECOND distinct source host,
+      (c) a LATER refresh re-extracting the same value (evidence created
+          strictly after the proposal).
+    """
+    rows = _matching_evidence_rows(db, product.id, change.field, change.new_value or "null")
+    proposal_host = _evidence_host(change.source_url)
+    for row in rows:
+        host = _evidence_host(row.source_url)
+        if host and (
+            source_quality.host_in(host, PEAK_TRUSTED_HOSTS)
+            or source_quality.is_official_issuer_source(product.issuer, row.source_url)
+        ):
+            return "trusted_source_evidence"
+        if host and host != proposal_host:
+            return "independent_host"
+        if (
+            row.created_at is not None
+            and change.created_at is not None
+            and row.created_at > change.created_at
+        ):
+            return "later_refresh_reconfirmed"
+    return None
+
+
+def _reject_unverified(
+    db: Session,
+    change: models.ProposedChange,
+    reason_code: str,
+    review_note: str,
+) -> None:
+    """Auto-reject with a retryable reason so future refreshes can re-propose."""
+    change.reason_code = reason_code
+    reject_change(db, change)
+    change.review_note = review_note
+
+
+def auto_resolve_pending_changes(db: Session, *, commit: bool = True) -> dict:
+    """The system reviews its own queue — no human is required (doctrine 2026-07-16).
+
+    Approval requires real verification: plausible magnitude; for PEAK fields
+    a peak-trusted or official source plus peak >= the known current offer;
+    for offer numbers independent corroboration (official/trusted host, a
+    second distinct host, or a later refresh re-extracting the same value —
+    never the proposing extraction's own evidence row); for eligibility-rule
+    changes an official issuer domain or >= 2 independent high-confidence
+    sources. Structured text fields (benefits/uses/multipliers/downgrades)
+    approve on the strength of the hardened normalization gates that already
+    run at apply time.
+
+    Nothing waits for a human: unverified eligibility changes reject
+    immediately, and uncorroborated offer/peak changes stay pending only until
+    PENDING_CHANGE_EXPIRY_DAYS, then auto-reject. Both use retryable reason
+    codes so a future refresh can re-propose the same value once better
+    evidence exists — the loop converges without intervention.
+    """
+    now = _utcnow()
     pending = db.scalars(
         select(models.ProposedChange).where(
             models.ProposedChange.target_table == "card_product",
@@ -1178,7 +1345,31 @@ def auto_resolve_pending_changes(db: Session, *, commit: bool = True) -> dict:
             rejected.append({"id": change.id, "product": display, "field": field, "reason": "implausible"})
             continue
 
-        # 2. Peak accuracy rules (the reference scale must be right).
+        # 2. Eligibility-rule changes: verified autonomously, never rubber-
+        # stamped and never left pending. Official issuer evidence or >= 2
+        # independent high-confidence hosts approve; anything else keeps the
+        # prior value and rejects retryably so refreshes can re-verify.
+        if field in ELIG_FIELDS:
+            verified, basis = _eligibility_change_verified(db, product, change)
+            if verified:
+                approve_change(db, change)
+                approved.append({"id": change.id, "product": display, "field": field, "basis": basis})
+            else:
+                _reject_unverified(
+                    db,
+                    change,
+                    "unverified_eligibility_auto_reject",
+                    "Auto-rejected: unverified eligibility change — kept prior value; "
+                    "will re-verify on future refreshes.",
+                )
+                rejected.append({"id": change.id, "product": display, "field": field, "reason": "unverified_eligibility"})
+            continue
+
+        change_age_days = (
+            (now - change.created_at).days if change.created_at is not None else PENDING_CHANGE_EXPIRY_DAYS
+        )
+
+        # 3. Peak accuracy rules (the reference scale must be right).
         if field in PEAK_FIELDS:
             current = product.current_offer_effective or product.current_offer_points or 0
             if current and isinstance(value, (int, float)) and value < current:
@@ -1191,21 +1382,44 @@ def auto_resolve_pending_changes(db: Session, *, commit: bool = True) -> dict:
             if _evidence_backs_value(db, product.id, field, change.new_value, trusted_hosts=PEAK_TRUSTED_HOSTS):
                 approve_change(db, change)
                 approved.append({"id": change.id, "product": display, "field": field, "basis": "trusted_peak_evidence"})
+            elif change_age_days >= PENDING_CHANGE_EXPIRY_DAYS:
+                _reject_unverified(
+                    db,
+                    change,
+                    "offer_change_never_corroborated",
+                    f"Auto-rejected: never backed by a peak-trusted source within "
+                    f"{PENDING_CHANGE_EXPIRY_DAYS} days — kept prior value; a future "
+                    "refresh can re-propose with fresh evidence.",
+                )
+                rejected.append({"id": change.id, "product": display, "field": field, "reason": "never_corroborated"})
             else:
                 kept.append({"id": change.id, "product": display, "field": field, "reason": "peak_needs_trusted_evidence"})
             continue
 
-        # 3. Offer/fee/referral numbers: recent recorded evidence for the value.
+        # 4. Offer/fee/referral numbers: independent corroboration, never the
+        # proposing extraction's own evidence row (that would be circular).
+        # Uncorroborated proposals self-expire so the queue stays clean.
         if field in OFFER_FIELDS or field in ("annual_fee", "first_year_credit_value", "peak_offer_min_spend"):
-            if _evidence_backs_value(db, product.id, field, change.new_value):
+            basis = _offer_change_corroborated(db, product, change)
+            if basis:
                 approve_change(db, change)
-                approved.append({"id": change.id, "product": display, "field": field, "basis": "recorded_evidence"})
+                approved.append({"id": change.id, "product": display, "field": field, "basis": basis})
+            elif change_age_days >= PENDING_CHANGE_EXPIRY_DAYS:
+                _reject_unverified(
+                    db,
+                    change,
+                    "offer_change_never_corroborated",
+                    f"Auto-rejected: never corroborated within {PENDING_CHANGE_EXPIRY_DAYS} "
+                    "days — kept prior value; a future refresh can re-propose with fresh evidence.",
+                )
+                rejected.append({"id": change.id, "product": display, "field": field, "reason": "never_corroborated"})
             else:
-                kept.append({"id": change.id, "product": display, "field": field, "reason": "no_matching_evidence"})
+                kept.append({"id": change.id, "product": display, "field": field, "reason": "awaiting_corroboration"})
             continue
 
-        # 4. Structured text fields: the hardened gates ARE the verification.
-        if field in SUPPLEMENTAL_WRITE_FIELDS or field in (
+        # 5. Structured text fields: the hardened gates ARE the verification.
+        # (Eligibility fields were handled above and never fall through here.)
+        if field in (SUPPLEMENTAL_WRITE_FIELDS - ELIG_FIELDS) or field in (
             "peak_offer_source",
             "peak_offer_date",
             "targeted_peak_offer_source",
@@ -1216,9 +1430,19 @@ def auto_resolve_pending_changes(db: Session, *, commit: bool = True) -> dict:
             approved.append({"id": change.id, "product": display, "field": field, "basis": "normalization_gates"})
             continue
 
-        # 5. Eligibility and anything else unrecognized stays for the rare
-        # human look — these change recommendation legality.
-        kept.append({"id": change.id, "product": display, "field": field, "reason": "manual_domain"})
+        # 6. Unrecognized fields (none expected for card_product today) wait
+        # for corroboration like offers do, then self-expire.
+        if change_age_days >= PENDING_CHANGE_EXPIRY_DAYS:
+            _reject_unverified(
+                db,
+                change,
+                "offer_change_never_corroborated",
+                f"Auto-rejected: unrecognized field never corroborated within "
+                f"{PENDING_CHANGE_EXPIRY_DAYS} days — kept prior value.",
+            )
+            rejected.append({"id": change.id, "product": display, "field": field, "reason": "never_corroborated"})
+        else:
+            kept.append({"id": change.id, "product": display, "field": field, "reason": "awaiting_corroboration"})
 
     if commit:
         db.commit()
@@ -1260,7 +1484,14 @@ def approve_change(db: Session, change: models.ProposedChange) -> None:
         if product is not None:
             value = json.loads(change.new_value) if change.new_value is not None else None
             setattr(product, change.field, _coerce(change.field, value))
-            product.source_url = change.source_url or product.source_url
+            # Same provenance gate as apply_extraction: only a safe
+            # product-specific source may become the product's source of truth.
+            if change.source_url and source_quality.is_safe_product_source(
+                product.issuer,
+                product.product_name,
+                change.source_url,
+            ):
+                product.source_url = change.source_url
             product.last_verified = _utcnow()
     change.status = "approved"
     db.commit()

@@ -19,7 +19,10 @@ in the same change — don't let them drift.
   `effective_points ≥ MIN_APPLY_POINTS` (configurable in `config.py`). Below the floor →
   **WATCH** even at 100% of peak.
 - **WATCH** requires `offer_value ≥ MIN_WATCH_VALUE`, else **LOW PRIORITY**.
-- **WAIT** = eligible but offer well below peak (timing not right).
+- **WAIT** = eligible but offer well below peak (timing not right). This includes
+  high-value offers under `WAIT_THRESHOLD` (% of peak): if `offer_value ≥ MIN_WATCH_VALUE`
+  the card stays **visible as WAIT** — it is never silently dropped to LOW PRIORITY just
+  because the timing is bad.
 - **NEEDS DATA** = unknown peak or unknown value — never ranked as a deal, never fabricated.
 - **SKIP** = permanently ineligible (e.g. Amex once-per-lifetime already earned, closed).
 - **FUTURE** = tagged for a future trip, not yet time.
@@ -34,11 +37,33 @@ Order by **estimated first-year / household value**, with strategic modifiers, t
    Capital One Miles) and large bonuses.
 4. **`peak_score`** as a tiebreaker / timing flag only.
 
-## Quality bias
+This precedence is **canonical across all three surfaces**: the per-user pipeline
+(`pipeline.py::sort_key`), household best-moves (`household.py::move_sort_key`, with
+`household_value` — welcome + referral capture — as the value term), and the household
+referrals table (`referral_sort_key`, with `household_gain` before pipeline rank). The
+Pipeline and Household pages must agree on why a card is #1; a Chase WAIT card can
+legitimately top both under 5/24.
 
+## Quality bias — POINTS-FIRST (travel maximization)
+
+- The goal is **max transferable points for travel** (owner doctrine 2026-07-16).
 - Favor **large bonuses (≈75k–100k+)** from **transferable-currency** issuers (Amex, Chase,
   Capital One).
 - Treat small, cashback-only, or store/retail bonuses as **low priority by default**.
+- **Cash-only offers** (no points component, public or targeted) are tracked and valued
+  honestly — dollar value, dollar-based peak comparison, provenance — but are **demoted to
+  LOW PRIORITY** when `POINTS_FIRST` is on (default), with an explicit
+  "filtered by points-first preference" reason. The data stays; the queue stays points.
+  Offers that bundle points + cash are points offers and are never filtered.
+
+## Re-bonus windows gate the APPLY path
+
+Issuer re-bonus windows apply to **both** the apply queue and held-card requeue, from one
+shared rule table: Amex lifetime, Chase Sapphire 48mo, generic Chase 24mo, Citi 24mo,
+Barclays 24mo, airline co-brands 24mo, Capital One Venture family (personal and business)
+48mo. Closed cards count — closing a card never resets its bonus clock. A bonus-earned card
+with an unknown earn date is conservatively ineligible for windowed issuers (never guessed
+eligible). In-window cards surface as WAIT with the dated eligible-again reason.
 
 ## Household + hygiene rules
 
