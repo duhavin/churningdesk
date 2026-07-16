@@ -78,20 +78,34 @@ def render_many_pages(
     return report
 
 
-async def _render_many(urls: list[str], *, timeout_ms: int) -> dict[str, FetchedPage | str]:
-    _ensure_base_dir()
-    try:
-        from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
-        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
-        from crawl4ai.content_filter_strategy import PruningContentFilter
-    except Exception as exc:
-        return {url: f"crawl4ai_import_failed: {exc}" for url in urls}
+def _build_crawler_setup(timeout_ms: int):
+    """Canonical DEMONFLOW Crawl4AI stealth setup (toolbench/crawl4ai/README.md):
+    magic=True, enable_stealth=True, random user-agent, persistent context, and
+    the patchright-backed UndetectedAdapter strategy. Falls back to the default
+    Playwright adapter (stealth config kept) if the adapter is unavailable, so
+    scraping degrades instead of breaking.
 
-    browser_config = BrowserConfig(headless=True, verbose=False)
+    Returns (browser_config, run_config, strategy_or_None, warning_or_None).
+    """
+    from crawl4ai import BrowserConfig, CacheMode, CrawlerRunConfig
+    from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+    from crawl4ai.content_filter_strategy import PruningContentFilter
+
+    profile_dir = Path(config.CRAWL4AI_BASE_DIR) / "profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    browser_config = BrowserConfig(
+        headless=config.CRAWL4AI_HEADLESS,
+        verbose=False,
+        enable_stealth=True,
+        user_agent_mode="random",
+        use_persistent_context=True,
+        user_data_dir=str(profile_dir.resolve()),
+    )
     run_config = CrawlerRunConfig(
         cache_mode=CacheMode.ENABLED,
         page_timeout=timeout_ms,
         word_count_threshold=1,
+        magic=True,
         markdown_generator=DefaultMarkdownGenerator(
             content_filter=PruningContentFilter(
                 threshold=0.45,
@@ -100,8 +114,38 @@ async def _render_many(urls: list[str], *, timeout_ms: int) -> dict[str, Fetched
             )
         ),
     )
+    strategy = None
+    warning = None
+    try:
+        from crawl4ai import UndetectedAdapter
+        from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+
+        strategy = AsyncPlaywrightCrawlerStrategy(
+            browser_config=browser_config,
+            browser_adapter=UndetectedAdapter(),
+        )
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        warning = f"undetected_adapter_unavailable: {exc}"
+    return browser_config, run_config, strategy, warning
+
+
+async def _render_many(urls: list[str], *, timeout_ms: int) -> dict[str, FetchedPage | str]:
+    _ensure_base_dir()
+    try:
+        from crawl4ai import AsyncWebCrawler
+    except Exception as exc:
+        return {url: f"crawl4ai_import_failed: {exc}" for url in urls}
+
+    try:
+        browser_config, run_config, strategy, _warning = _build_crawler_setup(timeout_ms)
+    except Exception as exc:
+        return {url: f"crawl4ai_config_failed: {exc}" for url in urls}
+
+    crawler_kwargs = {"config": browser_config}
+    if strategy is not None:
+        crawler_kwargs["crawler_strategy"] = strategy
     out: dict[str, FetchedPage | str] = {}
-    async with AsyncWebCrawler(config=browser_config) as crawler:
+    async with AsyncWebCrawler(**crawler_kwargs) as crawler:
         for url in urls:
             try:
                 result = await crawler.arun(url=url, config=run_config)

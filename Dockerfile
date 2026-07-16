@@ -15,6 +15,9 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 # Chromium for crawl4ai offer scraping (--with-deps pulls the system libs).
 RUN playwright install --with-deps chromium
+# Patchright chromium for the UndetectedAdapter stealth strategy (no-op if the
+# playwright build above already matches patchright's pinned revision).
+RUN patchright install --with-deps chromium
 COPY backend/ ./backend/
 COPY --from=web /web/dist ./frontend/dist
 # CWD must stay /app: DATABASE_URL default is sqlite:///data/wewards.db

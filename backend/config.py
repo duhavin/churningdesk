@@ -60,6 +60,8 @@ SUPPLEMENTAL_SEARCH_COOLDOWN_DAYS: int = int(os.getenv("SUPPLEMENTAL_SEARCH_COOL
 CRAWL4AI_ENABLED: bool = os.getenv("CRAWL4AI_ENABLED", "true").lower() == "true"
 CRAWL4AI_MAX_URLS_PER_REFRESH: int = int(os.getenv("CRAWL4AI_MAX_URLS_PER_REFRESH", "6"))
 CRAWL4AI_TIMEOUT_MS: int = int(os.getenv("CRAWL4AI_TIMEOUT_MS", "45000"))
+# Headless default suits the container; set false locally for tougher targets.
+CRAWL4AI_HEADLESS: bool = os.getenv("CRAWL4AI_HEADLESS", "true").lower() == "true"
 CRAWL4AI_BASE_DIR: str = _env_nonempty("CRAWL4_AI_BASE_DIRECTORY", "CRAWL4AI_BASE_DIR", default=_default_crawl4ai_base_dir())
 Path(CRAWL4AI_BASE_DIR).mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("CRAWL4_AI_BASE_DIRECTORY", str(Path(CRAWL4AI_BASE_DIR).resolve()))

@@ -4,6 +4,41 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-07-16 - wewards.dwagon.app URL live (doc sync)
+
+**Status:** verified live; docs-only ledger sync (no code/config change here).
+
+WEwards is now reachable at a browser-trusted `https://wewards.dwagon.app` in
+addition to `https://wewards.tail26040e.ts.net`. The workspace `dwagon.app`
+domain gateway (`toolbench/hosting/domain-gateway/`) reverse-proxies the private
+name to the wewards tailnet node, forwarding the original Host. PUBLIC/PRIVATE
+firewall and private-data boundaries are unchanged; this is a hosting URL only.
+
+**Verification (2026-07-16):** `https://wewards.dwagon.app/` returns HTTP 200
+serving the real dashboard (title `WEwards — Household Rewards Dashboard`).
+ts.net remains canonical for health checks.
+
+**Rollback:** none needed (external activation); revert this note to undo docs.
+
+## 2026-07-16 - Crawl4AI canonical stealth restored (magic + stealth + UndetectedAdapter)
+
+**Status:** implemented and verified. **Scope:** `backend/ingestion/
+rendered_fetch.py`, `backend/config.py` (`CRAWL4AI_HEADLESS`), `Dockerfile`
+(patchright chromium), new `backend/tests/test_rendered_fetch.py`.
+
+Davin's /docker check was right: the rendered fallback used a plain headless
+`BrowserConfig` — none of the workspace-canonical anti-bot posture from
+`toolbench/crawl4ai/README.md`. Now: `CrawlerRunConfig(magic=True)`,
+`BrowserConfig(enable_stealth=True, user_agent_mode="random",
+use_persistent_context=True)` with a persistent profile under
+`CRAWL4AI_BASE_DIR/profile`, and the patchright-backed `UndetectedAdapter`
+strategy (graceful fallback to the default adapter with a warning if
+unavailable, so scraping degrades instead of breaking). Headless stays the
+container-safe default via `CRAWL4AI_HEADLESS`. This targets exactly the
+anti-bot blocks seen in the 2026-07-15 scan (TPG rates/fees pages).
+Verification: 229 backend tests pass including the new canonical-config pins.
+Rollback: revert the four files; no schema/data changes.
+
 ## 2026-07-16 - Autonomous-verification + decision-correctness fix pass
 
 **Status:** implemented and verified. **Scope:** Davin-approved fixes from the
