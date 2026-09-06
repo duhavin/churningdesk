@@ -13,6 +13,7 @@ from backend.ingestion import extract, schedule, static_parse, validate
 from backend.logic import catalog, eligibility, pipeline, scoring
 from backend.product_identity import canonical_product_key, product_display_name, product_reference, product_variant_key
 from backend.routers.ingestion import _proposed_change_to_dict
+from backend.tests.offer_fixtures import add_current_offer_evidence
 
 
 class IngestionGuardTests(unittest.TestCase):
@@ -375,6 +376,7 @@ class IngestionGuardTests(unittest.TestCase):
             current_offer_cash=500,
             current_offer_min_spend=4000,
             current_offer_window_months=3,
+            offer_expiration="2026-12-31",
             is_targeted=True,
             offer_status="targeted",
             source_url="https://example.test/targeted",
@@ -386,6 +388,7 @@ class IngestionGuardTests(unittest.TestCase):
         self.assertIsNone(product.current_offer_cash)
         self.assertIsNone(product.current_offer_min_spend)
         self.assertIsNone(product.current_offer_window_months)
+        self.assertIsNone(product.offer_expiration)
 
     def test_supplemental_facts_commit_without_bonus_line(self):
         db = self._session()
@@ -1047,6 +1050,8 @@ class IngestionGuardTests(unittest.TestCase):
             ]
         )
         db.commit()
+        add_current_offer_evidence(db, [venture, venture_x])
+        db.commit()
         db.refresh(venture_x)
         db.add(
             models.HeldCard(
@@ -1104,6 +1109,8 @@ class IngestionGuardTests(unittest.TestCase):
                 models.Valuation(currency="Amex Membership Rewards", cpp_override=1.5),
             ]
         )
+        db.commit()
+        add_current_offer_evidence(db, [personal_gold, business_gold])
         db.commit()
         db.refresh(personal_gold)
         db.add(

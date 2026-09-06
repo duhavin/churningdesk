@@ -160,6 +160,7 @@ export interface CatalogEntry {
   current_offer_cash: number | null;
   current_offer_min_spend: number | null;
   current_offer_window_months: number | null;
+  offer_expiration?: string | null;
   peak_offer_points: number | null;
   peak_offer_effective: number | null;
   peak_offer_min_spend: number | null;
@@ -197,6 +198,9 @@ export interface CatalogEntry {
   is_exceptional: boolean;
   decision_ready?: boolean;
   data_quality_issues?: string[];
+  current_offer_status?: string | null;
+  current_offer_reason?: string | null;
+  current_offer_quality?: CurrentOfferQuality | null;
   status: string;
   rank: number | null;
 }
@@ -439,6 +443,7 @@ export interface ProfileSummary {
   category_coverage: CategoryCoverageItem[];
   benefit_tracker: BenefitLedger;
   notes: string | null;
+  organic_monthly_capacity: number | null;
 }
 export interface DashboardAttention {
   type: string;
@@ -464,6 +469,8 @@ export interface PipelineCard {
   product_name: string;
   display_name: string;
   ownership: string;
+  account_type?: string;
+  reports_to_personal_credit?: boolean;
   currency: string | null;
   tag: string | null;
   status: string;
@@ -472,12 +479,41 @@ export interface PipelineCard {
   effective_points: number;
   current_offer_min_spend: number | null;
   current_offer_window_months: number | null;
+  offer_expiration?: string | null;
+  current_offer_status?: string | null;
+  current_offer_reason?: string | null;
+  current_offer_quality?: CurrentOfferQuality | null;
   targeted_beats_public: boolean;
   is_exceptional: boolean;
   decision_ready?: boolean;
   data_quality_issues?: string[];
+  conditional?: boolean;
+  condition_kind?: string | null;
+  condition_reason?: string | null;
+  spend_capacity?: SpendCapacityProjection;
+  earliest_eligible_date?: string | null;
   relationship?: string;
   reason: string;
+}
+export interface CurrentOfferQuality {
+  ready: boolean;
+  status: string;
+  reason: string;
+  expiration?: string | null;
+  expiration_status?: string | null;
+  evidence_fetched_at?: string | null;
+}
+export interface SpendCapacityProjection {
+  organic_monthly_capacity: number | null;
+  active_min_spend_remaining: number;
+  horizon_months: number | null;
+  horizon_end: string | null;
+  analysis_horizon_months?: number | null;
+  analysis_horizon_end?: string | null;
+  horizon_budget: number | null;
+  available_after_commitments: number | null;
+  required_monthly_spend: number | null;
+  unknown_commitment_timing: boolean;
 }
 export interface LadderAlternative {
   id: number;
@@ -513,6 +549,7 @@ export interface PipelineResponse {
   needs_data: PipelineCard[];
   alternate_strategies: PipelineCard[];
   held_actions: HeldAction[];
+  household_next_move?: HouseholdNextMove;
 }
 export interface HouseholdUserSummary {
   user: string;
@@ -529,6 +566,10 @@ export interface BalanceRow {
   combined: number;
 }
 export interface HouseholdReferral {
+  conditional?: boolean;
+  condition_kind?: string | null;
+  condition_reason?: string | null;
+  spend_capacity?: HouseholdMove["spend_capacity"];
   from_user: string;
   to_user: string;
   id: number;
@@ -561,6 +602,8 @@ export interface HouseholdMove {
   product_name: string;
   display_name: string;
   ownership: string;
+  account_type?: string;
+  reports_to_personal_credit?: boolean;
   currency: string | null;
   status: string;
   peak_score: number;
@@ -573,16 +616,31 @@ export interface HouseholdMove {
   current_offer_points: number | null;
   current_offer_min_spend: number | null;
   current_offer_window_months: number | null;
+  offer_expiration?: string | null;
+  current_offer_status?: string | null;
+  current_offer_reason?: string | null;
+  current_offer_quality?: CurrentOfferQuality | null;
   is_exceptional: boolean;
   household_value: number;
   pipeline_rank?: number | null;
   decision_ready?: boolean;
   data_quality_issues?: string[];
+  conditional?: boolean;
+  condition_kind?: string | null;
+  condition_reason?: string | null;
+  spend_capacity?: SpendCapacityProjection;
+  earliest_eligible_date?: string | null;
   route: string;
   referral_from: string | null;
   referral_match?: string | null;
   referral_value: number | null;
   reason: string;
+}
+export interface HouseholdNextMove {
+  primary: HouseholdMove | null;
+  successors: HouseholdMove[];
+  wait_until?: string | null;
+  successor_reason?: string | null;
 }
 export interface HouseholdResponse {
   users: HouseholdUserSummary[];
@@ -591,6 +649,7 @@ export interface HouseholdResponse {
   card_snapshot: Record<string, HeldCard[]>;
   referrals: HouseholdReferral[];
   moves: HouseholdMove[];
+  next_move?: HouseholdNextMove;
 }
 export interface ProposedChange {
   id: number;

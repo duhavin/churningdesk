@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 
 # --- Held cards (PRIVATE) ---------------------------------------------------
@@ -84,6 +84,7 @@ class CardProductCreate(BaseModel):
     current_offer_cash: float | None = None
     current_offer_min_spend: float | None = None
     current_offer_window_months: int | None = None
+    offer_expiration: str | None = None
     peak_offer_points: int | None = None
     peak_offer_min_spend: float | None = None
     peak_offer_source: str | None = None
@@ -123,6 +124,7 @@ class CardProductUpdate(BaseModel):
     current_offer_cash: float | None = None
     current_offer_min_spend: float | None = None
     current_offer_window_months: int | None = None
+    offer_expiration: str | None = None
     peak_offer_points: int | None = None
     peak_offer_min_spend: float | None = None
     peak_offer_source: str | None = None
@@ -185,6 +187,7 @@ class ValuationUpsert(BaseModel):
 # --- Profiles ---------------------------------------------------------------
 class ProfileUpsert(BaseModel):
     point_balances: dict[str, float] | None = None
+    organic_monthly_capacity: FiniteFloat | None = Field(default=None, ge=0)
     notes: str | None = None
 
 

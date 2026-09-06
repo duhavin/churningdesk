@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from backend import config, models
 from backend.db import Base
 from backend.logic import catalog, scoring
+from backend.tests.offer_fixtures import add_current_offer_evidence
 
 ELIGIBLE = {"eligible": True, "block_type": "none"}
 CPP_2 = {"chase ultimate rewards": 2.0}
@@ -184,6 +185,8 @@ class ScoredCatalogCashOnlyTests(unittest.TestCase):
                 models.Valuation(currency="Test Cash Points", cpp_scraped=2.0),
             ]
         )
+        db.commit()
+        add_current_offer_evidence(db, [points_card, cash_card])
         db.commit()
 
         with patch.object(config, "POINTS_FIRST", True):

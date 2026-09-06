@@ -31,15 +31,254 @@ def _is_chase(issuer: str) -> bool:
     return "chase" in (issuer or "").lower()
 
 
+def is_ink_business(candidate: dict) -> bool:
+    """Return whether a candidate belongs to the Chase Ink strategic band."""
+    return (
+        _is_chase(candidate.get("issuer"))
+        and (candidate.get("ownership") or "") == "Business"
+        and "ink" in (candidate.get("product_name") or "").lower()
+    )
+
+
+def strategy_sort_key(
+    candidate: dict,
+    *,
+    under_524: bool,
+    value: float | None = None,
+    referral_value: float = 0.0,
+    tie_points: int | float = 0,
+    status: str | None = None,
+    pipeline_rank: object = None,
+    user_position: int = 0,
+) -> tuple:
+    """Canonical strategic ordering shared by Pipeline and Household.
+
+    ``referral_value`` is an explicit household-only contribution to the value
+    term; it is zero for the per-user pipeline.  The remaining fields preserve
+    the documented Chase/Ink/exceptional, value, preference, timing and rank
+    precedence without inventing a second household comparator.
+    """
+    base_value = value if value is not None else candidate.get("offer_value", 0)
+    effective_value = round(float(base_value or 0) + float(referral_value or 0), 2)
+    preferred_currency = 1 if (
+        (candidate.get("currency") or "").strip().lower()
+        in config.PREFERRED_TRANSFERABLE_CURRENCIES
+    ) else 0
+    points_for_bonus = candidate.get("effective_points")
+    if points_for_bonus is None:
+        points_for_bonus = tie_points
+    large_bonus = 1 if (points_for_bonus or 0) >= config.MIN_APPLY_POINTS else 0
+    status_priority = {
+        scoring.APPLY_NOW: 3,
+        scoring.WATCH: 2,
+        scoring.WAIT: 1,
+    }.get(status or candidate.get("status"), 0)
+    rank = pipeline_rank if pipeline_rank is not None else candidate.get("rank")
+    try:
+        rank_score = -int(rank)
+    except (TypeError, ValueError):
+        rank_score = -999
+    return (
+        1 if _is_chase(candidate.get("issuer")) and under_524 else 0,
+        1 if is_ink_business(candidate) else 0,
+        1 if candidate.get("is_exceptional") else 0,
+        effective_value,
+        preferred_currency,
+        large_bonus,
+        status_priority,
+        candidate.get("peak_score") or 0,
+        tie_points or 0,
+        rank_score,
+        -(candidate.get("annual_fee") or 0),
+        -user_position,
+    )
+
+
 def _exact_key(issuer: str | None, product_name: str | None) -> tuple[str, str]:
     return ((issuer or "").strip().lower(), (product_name or "").strip().lower())
 
 
-def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = None) -> dict:
+def _active_min_spend_remaining(card: models.HeldCard) -> float:
+    """Return only the recorded unfinished minimum-spend commitment."""
+    if (card.status or "").strip().lower() in {"closed", "cancelled", "canceled"}:
+        return 0.0
+    if card.welcome_bonus_earned or card.min_spend_completed:
+        return 0.0
+    requirement = card.min_spend_requirement
+    if requirement is None or requirement <= 0:
+        return 0.0
+    progress = max(float(card.min_spend_progress or 0.0), 0.0)
+    return round(max(float(requirement) - progress, 0.0), 2)
+
+
+def _complete_months_elapsed(as_of: dt.date, event: dt.date) -> int:
+    """Count only full monthly allocation periods ending by ``event``."""
+    if event <= as_of:
+        return 0
+    months = (event.year - as_of.year) * 12 + event.month - as_of.month
+    if elig.add_months(as_of, months) > event:
+        months -= 1
+    return max(months, 0)
+
+
+def spend_capacity_projection(
+    context: "DecisionContext",
+    user: str,
+    candidate: dict,
+    as_of: dt.date | None = None,
+) -> dict:
+    """Annotate a candidate with private capacity facts without changing rank.
+
+    Capacity is the person's own monthly allocation before active bonus
+    commitments.  A missing capacity is deliberately represented as unknown;
+    no account balance or household total is inferred.
+    """
+    as_of = as_of or dt.date.today()
+    capacity = context.organic_monthly_capacity_by_user.get(user)
+    if capacity is not None:
+        capacity = round(max(float(capacity), 0.0), 2)
+
+    min_spend = candidate.get("current_offer_min_spend")
+    window = candidate.get("current_offer_window_months")
+    try:
+        horizon_months = int(window) if window is not None else None
+    except (TypeError, ValueError):
+        horizon_months = None
+    if horizon_months is not None and horizon_months <= 0:
+        horizon_months = None
+    candidate_horizon_end = elig.add_months(as_of, horizon_months) if horizon_months else None
+    commitment_rows: list[tuple[float, dt.date | None]] = []
+    unknown_commitment_timing = False
+    overdue_commitment_timing = False
+    for card in context.active_held_by_user.get(user, []):
+        remaining = _active_min_spend_remaining(card)
+        if not remaining:
+            continue
+        deadline = card.min_spend_deadline
+        if deadline is None:
+            unknown_commitment_timing = True
+        elif deadline < as_of:
+            overdue_commitment_timing = True
+        commitment_rows.append((remaining, deadline))
+    active_commitments = round(sum(amount for amount, _ in commitment_rows), 2)
+    dated_deadlines = [deadline for _, deadline in commitment_rows if deadline is not None]
+    analysis_horizon_end = max(
+        [candidate_horizon_end, *dated_deadlines] if candidate_horizon_end else dated_deadlines,
+        default=None,
+    )
+    analysis_horizon_months = None
+    if analysis_horizon_end is not None:
+        analysis_horizon_months = _complete_months_elapsed(as_of, analysis_horizon_end)
+    horizon_budget = round(capacity * horizon_months, 2) if capacity is not None and horizon_months else None
+    analysis_budget = (
+        round(capacity * analysis_horizon_months, 2)
+        if capacity is not None and analysis_horizon_months is not None
+        else None
+    )
+    available = (
+        round(max(analysis_budget - active_commitments, 0.0), 2)
+        if analysis_budget is not None
+        else None
+    )
+    required_monthly = None
+    condition_kind = None
+    condition_reason = None
+    if min_spend is not None and float(min_spend) > 0:
+        if horizon_months is None:
+            condition_kind = "missing_spend_window"
+            condition_reason = (
+                "Minimum spend window is unknown; confirm the current terms before applying."
+            )
+        else:
+            required_monthly = round(float(min_spend) / horizon_months, 2)
+            if capacity is None:
+                condition_kind = "unknown_capacity"
+                condition_reason = (
+                    "Organic monthly spend capacity is unknown; confirm available spend before applying."
+                )
+            elif unknown_commitment_timing:
+                condition_kind = "unknown_commitment_timing"
+                condition_reason = (
+                    f"${active_commitments:,.0f} in active minimum-spend commitments has unknown timing; "
+                    "confirm deadlines before applying."
+                )
+            elif overdue_commitment_timing:
+                condition_kind = "overdue_commitment_timing"
+                condition_reason = (
+                    f"${active_commitments:,.0f} in active minimum-spend commitments includes an overdue deadline; "
+                    "confirm the remaining obligations before applying."
+                )
+            else:
+                # Check the candidate and every recorded commitment deadline as
+                # one cumulative cash-flow model.  A later deadline remains a
+                # real obligation; it cannot be ignored just because it falls
+                # outside the candidate's spend window.
+                due_events = sorted({deadline for _, deadline in commitment_rows if deadline is not None})
+                if candidate_horizon_end is not None:
+                    due_events.append(candidate_horizon_end)
+                cumulative = 0.0
+                candidate_added = False
+                for event in sorted(set(due_events)):
+                    cumulative += sum(amount for amount, deadline in commitment_rows if deadline == event)
+                    if candidate_horizon_end is not None and not candidate_added and event >= candidate_horizon_end:
+                        cumulative += float(min_spend)
+                        candidate_added = True
+                    months = _complete_months_elapsed(as_of, event)
+                    event_budget = float(capacity or 0.0) * months
+                    if cumulative > event_budget:
+                        condition_kind = "insufficient_capacity"
+                        condition_reason = (
+                            f"By {event.isoformat()}, recorded minimum-spend commitments and this offer "
+                            f"total ${cumulative:,.0f} against ${event_budget:,.0f} of declared capacity."
+                        )
+                        break
+            if condition_kind is None and float(min_spend) > (available or 0.0):
+                condition_kind = "insufficient_capacity"
+                condition_reason = (
+                    f"Across the declared {analysis_horizon_months or horizon_months}-month horizon, "
+                    f"${active_commitments:,.0f} is already committed, leaving ${available or 0:,.0}; this offer needs "
+                    f"${float(min_spend):,.0f}."
+                )
+
+    if candidate.get("targeted_beats_public"):
+        targeted_reason = (
+            "Confirm the selected private offer's minimum spend and time window. "
+            "Public spend terms are a reference and do not verify this private offer."
+        )
+        condition_reason = f"{targeted_reason} {condition_reason}" if condition_reason else targeted_reason
+        condition_kind = "unverified_targeted_terms"
+
+    return {
+        "conditional": condition_kind is not None,
+        "condition_kind": condition_kind,
+        "condition_reason": condition_reason,
+        "spend_capacity": {
+            "organic_monthly_capacity": capacity,
+            "active_min_spend_remaining": active_commitments,
+            "horizon_months": horizon_months,
+            "horizon_end": candidate_horizon_end.isoformat() if candidate_horizon_end else None,
+            "analysis_horizon_months": analysis_horizon_months,
+            "analysis_horizon_end": analysis_horizon_end.isoformat() if analysis_horizon_end else None,
+            "horizon_budget": horizon_budget,
+            "available_after_commitments": available,
+            "required_monthly_spend": required_monthly,
+            "unknown_commitment_timing": unknown_commitment_timing,
+        },
+    }
+
+
+def build_pipeline(
+    db: Session,
+    user: str,
+    context: "DecisionContext | None" = None,
+    as_of: dt.date | None = None,
+    include_timing_waits: bool = False,
+) -> dict:
     held = list(context.held_by_user.get(user, [])) if context else elig.held_cards(db, user)
-    f24 = elig.five24(db, user, held=held)
+    as_of = as_of or dt.date.today()
+    f24 = elig.five24(db, user, as_of=as_of, held=held)
     under_524 = f24.count < 5
-    entries = catalog_logic.scored_catalog(db, user, held=held, context=context)
+    entries = catalog_logic.scored_catalog(db, user, held=held, context=context, as_of=as_of)
 
     # Products the user already holds (open) — never recommend opening these
     # again. Re-applying a re-eligible card is surfaced via held_actions
@@ -88,29 +327,24 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
     eligible_unheld = [
         e
         for e in entries
-        if e["eligibility"]["eligible"]
+        if (
+            e["eligibility"]["eligible"]
+            or (
+                e["status"] == scoring.WAIT
+                and e["eligibility"].get("block_type") == "temporary"
+                and (
+                    include_timing_waits
+                    or not any(
+                        "5/24" in str(reason).lower()
+                        for reason in e["eligibility"].get("reasons", [])
+                    )
+                )
+            )
+        )
         and e["id"] not in held_product_ids
         and _exact_key(e["issuer"], e["product_name"]) not in held_keys
         and product_variant_key(e["issuer"], e["product_name"]) not in held_variants
     ]
-
-    def sort_key(e: dict):
-        issuer_chase = _is_chase(e["issuer"])
-        is_ink = issuer_chase and e["ownership"] == "Business" and "ink" in (e["product_name"] or "").lower()
-        preferred_currency = 1 if (e.get("currency") or "").strip().lower() in config.PREFERRED_TRANSFERABLE_CURRENCIES else 0
-        large_bonus = 1 if (e.get("effective_points") or 0) >= config.MIN_APPLY_POINTS else 0
-        chase_priority = 1 if (issuer_chase and under_524) else 0
-        return (
-            chase_priority,
-            1 if is_ink else 0,
-            1 if e.get("is_exceptional") else 0,
-            e["offer_value"],
-            preferred_currency,
-            large_bonus,
-            {scoring.APPLY_NOW: 3, scoring.WATCH: 2, scoring.WAIT: 1}.get(e["status"], 0),
-            e["peak_score"],
-            -(e.get("annual_fee") or 0),
-        )
 
     eligible: list[dict] = []
     family_alternates: list[dict] = []
@@ -121,8 +355,26 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
         else:
             eligible.append(entry)
 
-    eligible.sort(key=sort_key, reverse=True)
-    family_alternates.sort(key=sort_key, reverse=True)
+    eligible.sort(
+        key=lambda e: strategy_sort_key(
+            e,
+            under_524=under_524,
+            value=e["offer_value"],
+            tie_points=e.get("effective_points") or 0,
+            status=e["status"],
+        ),
+        reverse=True,
+    )
+    family_alternates.sort(
+        key=lambda e: strategy_sort_key(
+            e,
+            under_524=under_524,
+            value=e["offer_value"],
+            tie_points=e.get("effective_points") or 0,
+            status=e["status"],
+        ),
+        reverse=True,
+    )
     actionable = [e for e in eligible if e["status"] in ACTIONABLE_STATUSES]
     needs_data = [
         e
@@ -141,6 +393,8 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "product_name": e["product_name"],
                 "display_name": e.get("display_name") or product_display_name(e["issuer"], e["product_name"]),
                 "ownership": e["ownership"],
+                "account_type": e.get("account_type", "Credit Card"),
+                "reports_to_personal_credit": e.get("reports_to_personal_credit", True),
                 "currency": e["currency"],
                 "tag": e.get("tag"),
                 "status": e["status"],
@@ -149,6 +403,11 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "effective_points": e["effective_points"],
                 "current_offer_min_spend": e.get("current_offer_min_spend"),
                 "current_offer_window_months": e.get("current_offer_window_months"),
+                "offer_expiration": e.get("offer_expiration"),
+                "current_offer_status": e.get("current_offer_status"),
+                "current_offer_reason": e.get("current_offer_reason"),
+                "current_offer_quality": e.get("current_offer_quality"),
+                "earliest_eligible_date": (e.get("eligibility") or {}).get("earliest_eligible_date"),
                 "targeted_beats_public": e["targeted_beats_public"],
                 "is_exceptional": e.get("is_exceptional", False),
                 "decision_ready": e.get("decision_ready", True),
@@ -156,6 +415,9 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "reason": reason,
             }
         )
+    if context is not None:
+        for card in next_cards:
+            card.update(spend_capacity_projection(context, user, card, as_of=as_of))
     needs_data_cards = []
     for e in needs_data:
         needs_data_cards.append(
@@ -173,6 +435,10 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "effective_points": e["effective_points"],
                 "current_offer_min_spend": e.get("current_offer_min_spend"),
                 "current_offer_window_months": e.get("current_offer_window_months"),
+                "offer_expiration": e.get("offer_expiration"),
+                "current_offer_status": e.get("current_offer_status"),
+                "current_offer_reason": e.get("current_offer_reason"),
+                "current_offer_quality": e.get("current_offer_quality"),
                 "targeted_beats_public": e["targeted_beats_public"],
                 "is_exceptional": e.get("is_exceptional", False),
                 "decision_ready": e.get("decision_ready", False),
@@ -200,6 +466,10 @@ def build_pipeline(db: Session, user: str, context: "DecisionContext | None" = N
                 "effective_points": e["effective_points"],
                 "current_offer_min_spend": e.get("current_offer_min_spend"),
                 "current_offer_window_months": e.get("current_offer_window_months"),
+                "offer_expiration": e.get("offer_expiration"),
+                "current_offer_status": e.get("current_offer_status"),
+                "current_offer_reason": e.get("current_offer_reason"),
+                "current_offer_quality": e.get("current_offer_quality"),
                 "targeted_beats_public": e["targeted_beats_public"],
                 "is_exceptional": e.get("is_exceptional", False),
                 "decision_ready": e.get("decision_ready", False),
@@ -288,6 +558,12 @@ def _needs_review_reason(e: dict) -> str:
             "missing_currency": "missing rewards currency",
             "missing_min_spend": "missing minimum spend",
             "missing_spend_window": "missing spend window",
+            "expired": "public offer has expired",
+            "invalid_expiration": "offer expiration is not a recognized date",
+            "current_offer_evidence_mismatch": "fresh evidence disagrees with persisted offer terms",
+            "current_offer_evidence_stale": "current offer evidence is stale",
+            "current_offer_evidence_missing": "current offer evidence is missing",
+            "current_offer_evidence_unknown": "current offer evidence has unknown public status",
         }
         detail = ", ".join(labels.get(issue, issue.replace("_", " ")) for issue in issues[:3])
         return f"Excluded from apply queue: {detail}. Review or fill these public fields before ranking."

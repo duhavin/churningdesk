@@ -6,6 +6,7 @@ Used by the Card Plan tab and the Application Pipeline so both see the same
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import TYPE_CHECKING
 
 from sqlalchemy import or_, select
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from .. import config, models, source_quality
 from ..benefit_normalization import is_protection_benefit, normalize_public_benefits
 from ..crypto import MissingKeyError
+from ..ingestion.validate import FIELD_EVIDENCE_ALIASES, FIRST_SIGHT_FIELD_CONFIDENCE
 from ..product_identity import canonical_product_key, derive_product_family, product_display_name, product_variant_key
 from . import eligibility as elig
 from . import scoring
@@ -28,7 +30,16 @@ CRITICAL_DECISION_FIELDS = {
     "current_offer_cash",
     "current_offer_min_spend",
     "current_offer_window_months",
+    "offer_expiration",
 }
+
+_CURRENT_OFFER_VALUE_FIELDS = (
+    "current_offer_points",
+    "current_offer_cash",
+    "current_offer_min_spend",
+    "current_offer_window_months",
+)
+_UNKNOWN_EXPIRATION_VALUES = {"unknown", "unspecified", "n/a", "na", "none", "not stated"}
 
 
 def valuation_map(db: Session) -> dict[str, float]:
@@ -115,6 +126,26 @@ def effective_catalog(db: Session) -> list[models.CardProduct]:
     return dedupe_products_by_variant(filtered)
 
 
+def _offer_evidence_by_product(
+    db: Session,
+    product_ids: list[int],
+) -> dict[int, list[models.IngestionEvidence]]:
+    """Load all public evidence needed by a catalog projection in one query."""
+    if not product_ids:
+        return {}
+    rows = list(
+        db.scalars(
+            select(models.IngestionEvidence).where(
+                models.IngestionEvidence.product_id.in_(product_ids)
+            )
+        ).all()
+    )
+    out: dict[int, list[models.IngestionEvidence]] = {}
+    for row in rows:
+        out.setdefault(row.product_id, []).append(row)
+    return out
+
+
 def _verified_status(p: models.CardProduct) -> str:
     if not p.source_url or not p.last_verified:
         return "needs_source"
@@ -137,7 +168,235 @@ def _pending_fields(db: Session) -> dict[int, set[str]]:
     return out
 
 
-def _decision_quality_issues(p: models.CardProduct, pending_fields: set[str] | None = None) -> list[str]:
+def _parse_evidence_time(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    try:
+        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed_date = dt.date.fromisoformat(raw)
+        except ValueError:
+            return None
+        return dt.datetime.combine(parsed_date, dt.time.min)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _parse_offer_expiration(value: str | None) -> tuple[dt.date | None, str]:
+    """Return (date, state) without inventing a date for ambiguous text."""
+    raw = str(value or "").strip()
+    if not raw or raw.lower() in _UNKNOWN_EXPIRATION_VALUES:
+        return None, "unknown"
+    candidates = ("%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y", "%Y-%m")
+    for fmt in candidates:
+        try:
+            parsed = dt.datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+        if fmt == "%Y-%m":
+            next_month = parsed.replace(day=28) + dt.timedelta(days=4)
+            parsed = next_month - dt.timedelta(days=next_month.day)
+        return parsed, "known"
+    try:
+        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None, "invalid"
+    return parsed, "known"
+
+
+def _evidence_text(row: models.IngestionEvidence) -> str:
+    snippets = row.evidence_snippets
+    if isinstance(snippets, dict):
+        values = snippets.values()
+    elif isinstance(snippets, list):
+        values = [snippets]
+    else:
+        values = []
+    return " ".join(
+        str(item or "")
+        for group in values
+        for item in (group if isinstance(group, list) else [group])
+    )
+
+
+def _evidence_json_value(row: models.IngestionEvidence):
+    try:
+        return json.loads(row.value_json) if row.value_json is not None else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def current_offer_quality(
+    product: models.CardProduct,
+    evidence_rows: list[models.IngestionEvidence] | None,
+    as_of: dt.date,
+) -> dict:
+    """Evaluate persisted public terms against fresh, field-level evidence.
+
+    ``CardProduct.last_verified`` is deliberately not consulted here.  It is a
+    product-level scrape marker and cannot prove that each current amount,
+    spend term, or expiration is still the value being displayed.  Evidence
+    freshness is based on ``fetched_at`` and the supplied planning date;
+    ``created_at`` is never used to rejuvenate an old fetch.
+    """
+    rows = list(evidence_rows or [])
+    # Planning/expiry dates are local calendar dates; fetched_at is normalized
+    # UTC. Compare timestamps in UTC after translating the local day boundary.
+    as_of_dt = dt.datetime.combine(as_of, dt.time.max).astimezone(dt.timezone.utc).replace(tzinfo=None)
+    cutoff = as_of_dt - dt.timedelta(days=config.DECISION_FRESH_DAYS)
+
+    by_field: dict[str, list[models.IngestionEvidence]] = {}
+    for row in rows:
+        by_field.setdefault(row.field or "", []).append(row)
+
+    def field_rows(field: str) -> list[models.IngestionEvidence]:
+        aliases = set(FIELD_EVIDENCE_ALIASES.get(field, (field,))) | {field}
+        return [row for alias in aliases for row in by_field.get(alias, [])]
+
+    def has_field_quality(field: str, row: models.IngestionEvidence) -> bool:
+        """Keep the decision reader aligned with ingestion's first-sight gate."""
+        threshold = FIRST_SIGHT_FIELD_CONFIDENCE.get(field, 0.65)
+        return (row.confidence or 0.0) >= threshold and bool(_evidence_text(row).strip())
+
+    def evaluate_field(field: str, expected) -> tuple[bool, str]:
+        candidates = field_rows(field)
+        if not candidates:
+            return False, "missing"
+        dated = [_parse_evidence_time(row.fetched_at) for row in candidates]
+        fresh_rows = [
+            row
+            for row, fetched in zip(candidates, dated)
+            if fetched is not None and cutoff <= fetched <= as_of_dt
+        ]
+        if not fresh_rows:
+            return False, "stale"
+        public_rows = [row for row in fresh_rows if (row.offer_status or "").strip().lower() == "public"]
+        if not public_rows:
+            return False, "unknown"
+        quality_rows = [row for row in public_rows if has_field_quality(field, row)]
+        if not quality_rows:
+            return False, "unknown"
+        safe_rows = [
+            row
+            for row in quality_rows
+            if source_quality.is_safe_product_source(
+                product.issuer,
+                product.product_name,
+                row.source_url,
+                _evidence_text(row),
+            )
+        ]
+        if not safe_rows:
+            return False, "unknown"
+        if any(_evidence_json_value(row) == expected for row in safe_rows):
+            return True, "fresh"
+        return False, "mismatch"
+
+    required: list[tuple[str, object]] = []
+    effective_points = product.current_offer_effective
+    if effective_points is not None:
+        required.append(("current_offer_points", effective_points))
+    if product.current_offer_cash is not None:
+        required.append(("current_offer_cash", product.current_offer_cash))
+    if product.current_offer_min_spend is not None:
+        required.append(("current_offer_min_spend", product.current_offer_min_spend))
+    if product.current_offer_window_months is not None:
+        required.append(("current_offer_window_months", product.current_offer_window_months))
+
+    failures: list[tuple[str, str]] = []
+    fetched_values: list[dt.datetime] = []
+    for field, expected in required:
+        matched, state = evaluate_field(field, expected)
+        if matched:
+            for row in field_rows(field):
+                fetched = _parse_evidence_time(row.fetched_at)
+                if (
+                    fetched is not None
+                    and cutoff <= fetched <= as_of_dt
+                    and (row.offer_status or "").strip().lower() == "public"
+                    and _evidence_json_value(row) == expected
+                ):
+                    fetched_values.append(fetched)
+        else:
+            failures.append((field, state))
+
+    expiration_date, expiration_state = _parse_offer_expiration(product.offer_expiration)
+    if expiration_state == "invalid":
+        failures.append(("offer_expiration", "invalid"))
+    elif expiration_state == "known":
+        if expiration_date is not None and expiration_date < as_of:
+            failures.append(("offer_expiration", "expired"))
+        else:
+            matched, state = evaluate_field("offer_expiration", product.offer_expiration)
+            if matched:
+                for row in field_rows("offer_expiration"):
+                    fetched = _parse_evidence_time(row.fetched_at)
+                    if (
+                        fetched is not None
+                        and cutoff <= fetched <= as_of_dt
+                        and (row.offer_status or "").strip().lower() == "public"
+                        and _evidence_json_value(row) == product.offer_expiration
+                    ):
+                        fetched_values.append(fetched)
+            else:
+                failures.append(("offer_expiration", state))
+
+    if not required:
+        failures.append(("current_offer", "missing"))
+
+    state_priority = {
+        "expired": 0,
+        "invalid": 1,
+        "mismatch": 2,
+        "stale": 3,
+        "missing": 4,
+        "unknown": 5,
+    }
+    if failures:
+        primary_field, primary_state = sorted(
+            failures,
+            key=lambda item: (state_priority.get(item[1], 99), item[0]),
+        )[0]
+        status = {
+            "expired": "expired",
+            "invalid": "invalid_expiration",
+            "mismatch": "current_offer_evidence_mismatch",
+            "stale": "current_offer_evidence_stale",
+            "missing": "current_offer_evidence_missing",
+            "unknown": "current_offer_evidence_unknown",
+        }.get(primary_state, "current_offer_unknown")
+        detail = ", ".join(f"{field}: {state}" for field, state in failures)
+        return {
+            "ready": False,
+            "status": status,
+            "reason": f"Current public offer evidence is not ready ({detail}).",
+            "expiration": product.offer_expiration,
+            "expiration_status": "expired" if primary_state == "expired" else expiration_state,
+            "evidence_fetched_at": max(fetched_values).isoformat() if fetched_values else None,
+        }
+
+    return {
+        "ready": True,
+        "status": "fresh_unknown_expiration" if expiration_state == "unknown" else "fresh",
+        "reason": (
+            "Current public offer terms match fresh product evidence; expiration is unknown."
+            if expiration_state == "unknown"
+            else "Current public offer terms match fresh product evidence."
+        ),
+        "expiration": product.offer_expiration,
+        "expiration_status": expiration_state,
+        "evidence_fetched_at": max(fetched_values).isoformat() if fetched_values else None,
+    }
+
+
+def _decision_quality_issues(
+    p: models.CardProduct,
+    pending_fields: set[str] | None = None,
+    offer_quality: dict | None = None,
+) -> list[str]:
     issues: list[str] = []
     pending_fields = pending_fields or set()
     pending_critical = sorted(CRITICAL_DECISION_FIELDS & pending_fields)
@@ -146,12 +405,21 @@ def _decision_quality_issues(p: models.CardProduct, pending_fields: set[str] | N
     source_issue = source_quality.source_quality_issue(p.issuer, p.product_name, p.source_url)
     if source_issue:
         issues.append(source_issue)
-    if not p.last_verified:
-        issues.append("never_verified")
-    else:
-        age_days = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - p.last_verified).days
-        if age_days > config.DECISION_FRESH_DAYS:
-            issues.append("stale_verified_data")
+    # Fresh field-level evidence is authoritative for current terms.  Preserve
+    # the legacy product-level checks when no ready evidence projection exists,
+    # so old/reference rows remain visibly unverified rather than being silently
+    # promoted by a stale product marker.
+    if not offer_quality or not offer_quality.get("ready"):
+        if not p.last_verified:
+            issues.append("never_verified")
+        else:
+            age_days = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - p.last_verified).days
+            if age_days > config.DECISION_FRESH_DAYS:
+                issues.append("stale_verified_data")
+    if offer_quality and not offer_quality.get("ready"):
+        quality_status = offer_quality.get("status")
+        if quality_status and quality_status not in issues:
+            issues.append(quality_status)
     if not (p.current_offer_effective or p.current_offer_cash):
         issues.append("missing_current_offer")
     if not p.peak_offer_points:
@@ -181,6 +449,12 @@ def _blocks_apply_decision(issues: list[str]) -> bool:
         "missing_currency",
         "missing_min_spend",
         "missing_spend_window",
+        "expired",
+        "invalid_expiration",
+        "current_offer_evidence_mismatch",
+        "current_offer_evidence_stale",
+        "current_offer_evidence_missing",
+        "current_offer_evidence_unknown",
     }
     return any(issue in blocking for issue in issues)
 
@@ -232,6 +506,7 @@ def product_to_dict(p: models.CardProduct) -> dict:
         "current_offer_cash": p.current_offer_cash,
         "current_offer_min_spend": p.current_offer_min_spend,
         "current_offer_window_months": p.current_offer_window_months,
+        "offer_expiration": p.offer_expiration,
         "peak_offer_points": p.peak_offer_points,
         "peak_offer_min_spend": p.peak_offer_min_spend,
         "peak_offer_source": p.peak_offer_source,
@@ -415,22 +690,27 @@ def scored_catalog(
     user: str,
     held: list[models.HeldCard] | None = None,
     context: "DecisionContext | None" = None,
+    as_of: dt.date | None = None,
 ) -> list[dict]:
     """Catalog entries enriched with per-user eligibility, score, and rank.
 
     Pass ``held`` to reuse an already-loaded held-card list (e.g. from the
     pipeline) and avoid re-querying it.
     """
+    as_of = as_of or dt.date.today()
     vmap = context.valuations if context else valuation_map(db)
     # Load held cards once and reuse across five24 / eligibility / targeted
     # lookups — avoids the N+1 query storm of re-fetching them per product.
     held = held if held is not None else (
         list(context.held_by_user.get(user, [])) if context else elig.held_cards(db, user)
     )
-    f24 = elig.five24(db, user, held=held)
-    today = dt.date.today()
+    f24 = elig.five24(db, user, as_of=as_of, held=held)
     manual = (
-        list(context.manual_targeted_by_user.get(user, []))
+        [
+            offer
+            for offer in context.manual_targeted_by_user.get(user, [])
+            if offer.expires_at is None or offer.expires_at >= as_of
+        ]
         if context
         else list(
             db.scalars(
@@ -438,7 +718,7 @@ def scored_catalog(
                     models.ManualTargetedOffer.user == user,
                     or_(
                         models.ManualTargetedOffer.expires_at.is_(None),
-                        models.ManualTargetedOffer.expires_at >= today,
+                        models.ManualTargetedOffer.expires_at >= as_of,
                     ),
                 )
             ).all()
@@ -448,18 +728,32 @@ def scored_catalog(
     manual_map = {_key(m.issuer, m.product_name): m for m in manual}
     products = [p for p in (context.products if context else effective_catalog(db)) if _show_in_plan(p)]
     pending_by_id = _pending_fields(db)
+    evidence_by_product = (
+        context.offer_evidence_by_product
+        if context is not None
+        else _offer_evidence_by_product(db, [p.id for p in products if p.id])
+    )
 
     entries: list[dict] = []
     for p in products:
         e = elig.eligibility(
             db, user, p.issuer, p.product_name,
-            ownership=p.ownership, f24=f24, held=held,
+            ownership=p.ownership, as_of=as_of, f24=f24, held=held,
             eligibility_tags=p.eligibility_tags,
         ).to_dict()
         targeted = targeted_map.get(_key(p.issuer, p.product_name))
         manual_offer = manual_map.get(_key(p.issuer, p.product_name))
         s = scoring.compute_score(p, vmap, e, my_targeted_offer_points=targeted)
-        quality_issues = _decision_quality_issues(p, pending_by_id.get(p.id or 0, set()))
+        offer_quality = current_offer_quality(
+            p,
+            evidence_by_product.get(p.id or 0, []),
+            as_of,
+        )
+        quality_issues = _decision_quality_issues(
+            p,
+            pending_by_id.get(p.id or 0, set()),
+            offer_quality,
+        )
         quality_blocks = _blocks_apply_decision(quality_issues)
         entry = product_to_dict(p)
         status = scoring.NEEDS_DATA if quality_blocks and s.status != scoring.SKIP else s.status
@@ -480,6 +774,9 @@ def scored_catalog(
                 "cash_only": s.cash_only,
                 "data_quality_issues": quality_issues,
                 "decision_ready": not quality_blocks,
+                "current_offer_quality": offer_quality,
+                "current_offer_status": offer_quality["status"],
+                "current_offer_reason": offer_quality["reason"],
             }
         )
         entries.append(entry)

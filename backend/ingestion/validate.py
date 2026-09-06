@@ -44,6 +44,7 @@ OFFER_FIELDS = {
     "current_offer_cash",
     "current_offer_min_spend",
     "current_offer_window_months",
+    "offer_expiration",
     "peak_offer_points",
     "peak_offer_min_spend",
     "targeted_peak_offer_points",
@@ -124,6 +125,7 @@ OFFICIAL_AUTO_COMMIT_FIELDS = {
     "current_offer_cash",
     "current_offer_min_spend",
     "current_offer_window_months",
+    "offer_expiration",
     "first_year_credit_value",
 }
 FIELD_EVIDENCE_ALIASES = {
@@ -132,6 +134,7 @@ FIELD_EVIDENCE_ALIASES = {
     "current_offer_cash": ("current_offer_cash", "bonus_amount"),
     "current_offer_min_spend": ("current_offer_min_spend", "spend_requirement"),
     "current_offer_window_months": ("current_offer_window_months", "spend_window_months"),
+    "offer_expiration": ("offer_expiration",),
     "first_year_credit_value": ("first_year_credit_value",),
     "peak_offer_points": ("peak_offer_points", "peak_bonus_amount", "current_offer_points", "bonus_amount"),
     "peak_offer_min_spend": (
@@ -151,6 +154,7 @@ CURRENT_OFFER_FIELDS = {
     "current_offer_cash",
     "current_offer_min_spend",
     "current_offer_window_months",
+    "offer_expiration",
 }
 SUPPLEMENTAL_WRITE_FIELDS = {
     "earn_multipliers",
@@ -779,6 +783,9 @@ def _normalize_offer_payload(
 
     targeted = _looks_targeted(ext, fields)
     if targeted:
+        # Expiration belongs to the PUBLIC offer; targeted rows must never
+        # certify or carry it across the private/public boundary.
+        fields.pop("offer_expiration", None)
         if fields.get("current_offer_points") and not fields.get("targeted_peak_offer_points"):
             fields["targeted_peak_offer_points"] = fields.pop("current_offer_points")
             fields["targeted_peak_offer_source"] = (
@@ -789,10 +796,12 @@ def _normalize_offer_payload(
             )
             fields.pop("current_offer_min_spend", None)
             fields.pop("current_offer_window_months", None)
+            fields.pop("offer_expiration", None)
         if fields.get("current_offer_cash") and not fields.get("targeted_peak_offer_cash"):
             fields["targeted_peak_offer_cash"] = fields.pop("current_offer_cash")
             fields.pop("current_offer_min_spend", None)
             fields.pop("current_offer_window_months", None)
+            fields.pop("offer_expiration", None)
 
     # Point offers and cash offers are separate. A points offer with thousands
     # of "cash" dollars is almost always a parser mixing points and dollars.
@@ -895,6 +904,7 @@ def _extraction_fields(ext: OfferExtraction) -> dict:
         "current_offer_cash": ext.current_offer_cash,
         "current_offer_min_spend": ext.current_offer_min_spend,
         "current_offer_window_months": ext.current_offer_window_months,
+        "offer_expiration": ext.offer_expiration,
         "peak_offer_points": ext.peak_offer_points,
         "peak_offer_min_spend": ext.peak_offer_min_spend,
         "peak_offer_source": ext.peak_offer_source,

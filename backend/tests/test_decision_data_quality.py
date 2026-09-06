@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import unittest
 
 from sqlalchemy import create_engine, select
@@ -8,6 +9,7 @@ from backend import models
 from backend.db import Base
 from backend.ingestion import extract, validate
 from backend.logic import catalog, pipeline, scoring
+from backend.tests.offer_fixtures import add_current_offer_evidence
 
 
 def _now() -> dt.datetime:
@@ -67,6 +69,8 @@ class DecisionDataQualityTests(unittest.TestCase):
         product = _complete_product()
         db.add_all([product, models.Valuation(currency="Chase Ultimate Rewards", cpp_scraped=2.0)])
         db.commit()
+        add_current_offer_evidence(db, [product])
+        db.commit()
         db.refresh(product)
         change = models.ProposedChange(
             target_table="card_product",
@@ -81,11 +85,30 @@ class DecisionDataQualityTests(unittest.TestCase):
         db.add(change)
         db.commit()
 
+        # Approval still requires exact corroboration of the proposed value;
+        # the original row certifies only the prior 80,000-point offer.
+        db.add(
+            models.IngestionEvidence(
+                product_id=product.id,
+                field="current_offer_points",
+                value_json=json.dumps(100000),
+                source_url=product.source_url,
+                fetched_at=_now().isoformat(),
+                content_hash=f"fixture-{product.id}-current_offer_points-new",
+                confidence=0.95,
+                evidence_snippets={"current_offer_points": ["Chase Sapphire Preferred Card 100,000 points fixture."]},
+                offer_status="public",
+            )
+        )
+        db.commit()
+
         before = catalog.scored_catalog(db, "User A")[0]
         self.assertEqual(before["status"], scoring.NEEDS_DATA)
         self.assertIn("pending_verified_update", before["data_quality_issues"])
 
         validate.approve_change(db, change)
+        add_current_offer_evidence(db, [product])
+        db.commit()
         after = catalog.scored_catalog(db, "User A")[0]
 
         self.assertNotIn("pending_verified_update", after["data_quality_issues"])
@@ -100,6 +123,8 @@ class DecisionDataQualityTests(unittest.TestCase):
             current_offer_points=90000,
         )
         db.add_all([product, models.Valuation(currency="Chase Ultimate Rewards", cpp_scraped=2.0)])
+        db.commit()
+        add_current_offer_evidence(db, [product])
         db.commit()
 
         entry = catalog.scored_catalog(db, "User A")[0]
@@ -136,6 +161,10 @@ class DecisionDataQualityTests(unittest.TestCase):
         )
 
         result = validate.apply_extraction(db, product, ext, ext.source_url or "", commit=True)
+        # The extraction is intentionally about peak completeness; the
+        # persisted current values remain certified by a matching public row.
+        add_current_offer_evidence(db, [product])
+        db.commit()
         entry = catalog.scored_catalog(db, "User A")[0]
 
         self.assertIn("current_offer_points", result["committed"])

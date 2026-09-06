@@ -1,6 +1,36 @@
 # WEwards Current State
 
-Last updated: 2026-07-16 -07:00
+Last updated: 2026-09-05 -07:00
+
+## September enhancement checkpoint
+
+W1/W2 implementation and local verification are GREEN after Astra review and
+root independent whole-project review. Dashboard, Pipeline and Household
+consume one household next move and at most two recomputed conditional successors,
+using the existing strategy order. A WAIT can remain first. Optional encrypted
+per-person organic monthly capacity is reachable on desktop and phone Profiles;
+blank clears it to unknown. Cumulative feasibility checks each candidate/active
+commitment deadline, including later obligations, without double counting or
+inventing capacity. No hypothetical planning rows persist.
+
+Current public offer amount, spend, window and known expiration require matching
+fresh field evidence; unrelated last_verified changes cannot certify them. Missing
+published expiration is disclosed without invalidating otherwise fresh terms.
+A selected higher private offer needs its own confirmed spend/window terms.
+Shared conditions also govern referral Apply links and user-specific pipeline
+labels. Existing public/private encryption and ingestion review boundaries remain.
+
+Verification: 23 focused and all 259 backend tests passed (full 3.738 seconds),
+frontend typecheck and isolated production build passed. Fictional real API/browser
+flows passed at desktop, phone touch/DPR2 and tablet sizes, including capacity
+save/clear and referral action conditions. Evidence is in workspace output
+`enhancement-20260905/wewards-final/`; local font CSS was substituted to keep
+transports offline. Deployed runtime and external font delivery remain unverified.
+The scoped source checkpoint contains only the 33 W1/W2 paths. Its separate
+publication candidate passed 252 backend tests, typecheck, production build and
+the same 27 browser cases; the additional working-tree ingestion tests and
+preexisting ingestion changes remain local. Sanitize and exact-index review
+passed. Runtime deployment remains separate. See ENHANCEMENT_PLAN.md.
 
 Workspace hosting (2026-07-16 additive note): WEwards has a per-app tailnet
 hosting stack at `toolbench/hosting/wewards/`. Remote access is LIVE at both

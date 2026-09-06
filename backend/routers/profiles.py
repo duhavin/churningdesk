@@ -26,7 +26,13 @@ def _safe_balances(profile: models.UserProfile | None) -> dict | None:
 
 def _profile_summary(db: Session, user: str, context: DecisionContext | None = None) -> dict:
     context = context or DecisionContext.load(db)
-    profile = db.get(models.UserProfile, user)
+    try:
+        profile = db.get(models.UserProfile, user)
+    except MissingKeyError:
+        # Keep the profile surface readable when an encrypted optional field
+        # cannot be decrypted; the decision context already treats capacity and
+        # balances as unknown under the same key boundary.
+        profile = None
     balances = _safe_balances(profile) or {}
     vmap = context.valuations
 
@@ -59,6 +65,7 @@ def _profile_summary(db: Session, user: str, context: DecisionContext | None = N
             "contributing": f24.contributing,
         },
         "held_count": held_total,
+        "organic_monthly_capacity": profile.organic_monthly_capacity if profile else None,
         "category_coverage": categories_logic.build_user_category_coverage(db, user, context=context),
         "benefit_tracker": benefits_logic.build_user_benefit_tracker(db, user, context=context),
         "notes": profile.notes if profile else None,
@@ -91,6 +98,8 @@ def upsert_profile(
             db.add(profile)
         if payload.point_balances is not None:
             profile.point_balances = payload.point_balances
+        if "organic_monthly_capacity" in payload.model_fields_set:
+            profile.organic_monthly_capacity = payload.organic_monthly_capacity
         if payload.notes is not None:
             profile.notes = payload.notes
         db.commit()

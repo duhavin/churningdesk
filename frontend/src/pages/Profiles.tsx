@@ -514,6 +514,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
   const [loading, setLoading] = useState(true);
   const [balances, setBalances] = useState<{ currency: string; balance: string }[]>([]);
   const [notes, setNotes] = useState("");
+  const [organicCapacity, setOrganicCapacity] = useState("");
   const [saving, setSaving] = useState(false);
   const [balanceSaving, setBalanceSaving] = useState(false);
   const [balanceDraft, setBalanceDraft] = useState({ currency: "", balance: "" });
@@ -534,6 +535,7 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
         setReferences(refs);
         setBalances(Object.entries(p.point_balances ?? {}).map(([currency, balance]) => ({ currency, balance: String(balance) })));
         setNotes(p.notes ?? "");
+        setOrganicCapacity(p.organic_monthly_capacity == null ? "" : String(p.organic_monthly_capacity));
         setBenefitEdits(
           Object.fromEntries(
             (p.benefit_tracker?.benefits ?? []).map((row: any) => [
@@ -560,7 +562,11 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
     setSaving(true);
     try {
       const point_balances = balancesToRecord(balances);
-      await api.upsertProfile(user, { point_balances, notes });
+      await api.upsertProfile(user, {
+        point_balances,
+        notes,
+        organic_monthly_capacity: organicCapacity.trim() === "" ? null : Number(organicCapacity),
+      });
       flash("info", "Profile saved.");
       load();
     } catch (e: any) {
@@ -827,6 +833,22 @@ export function Profiles({ user, bump, flash }: { user: string; bump: number; fl
             <div>
               <span className="label mt-2">Notes</span>
               <textarea className="input min-h-20" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </div>
+            <div>
+              <label className="label mt-2" htmlFor="organic-monthly-capacity">Organic monthly spend capacity (optional)</label>
+              <input
+                id="organic-monthly-capacity"
+                className="input"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="Unknown"
+                value={organicCapacity}
+                onChange={(e) => setOrganicCapacity(e.target.value)}
+              />
+              <div className="mt-1 text-[11px] text-slate-500">
+                Monthly allocation before active minimum-spend commitments. Leave blank when unknown.
+              </div>
             </div>
             <div className="flex justify-end">
               <button className="btn-primary w-full justify-center sm:w-auto" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save profile"}</button>

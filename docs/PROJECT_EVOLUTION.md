@@ -4,6 +4,76 @@ This is the living change/audit ledger for the WEwards codebase.
 
 Keep entries concise and focused on code behavior, data model changes, verification, and rollback notes. Do not record private household data, real account details, secrets, local absolute paths, browser profiles, local database contents, or user-specific app state.
 
+## 2026-09-05 - W1/W2 joined household decision completion
+
+**Status:** implementation and local final verification GREEN after Astra review
+and root independent whole-project review. The separate scoped publication
+candidate also passed verification and sanitize; no deployed-runtime claim.
+
+**Changed:** the same first household move, wait/conditions and up to two
+recomputed successors now reach Dashboard, Pipeline and Household. Private
+per-person organic capacity is optional, encrypted and clearable on desktop and
+phone. Cumulative dated feasibility includes later active commitments once.
+Public current-offer amount/spend/window/known expiration require matching fresh
+field evidence; product-wide freshness cannot certify stale fields. A selected
+higher private offer remains conditional on its own spend/window confirmation.
+Referral actions and user-specific pipeline labels reuse those conditions.
+
+**Self-review corrections:** protected later commitment deadlines, preserved
+whole-month budget timing, joined targeted/public authority in both directions,
+removed conditional referral Apply links, and normalized local planning-day
+boundaries to UTC before comparing freshly fetched public evidence. Existing
+strategy order, public/private separation and ingestion review gates remain.
+
+**Evidence:** 23 focused tests and all 259 backend tests passed (full 3.738s;
+isolated wrapper 5.218s); frontend typecheck, isolated production build and
+whitespace checks passed. Real fictional API/browser verification passed 27
+cases at desktop, phone touch/DPR2 and tablet sizes with zero app/console errors,
+no page overflow, no owned browser roots or surviving listener. Capacity
+save/readback/clear and conditional versus ready referral actions were exercised.
+Screens were visually reviewed; phone full-page sticky positioning is a capture
+limitation, not a new product behavior claim. External font CSS was substituted
+locally; deployed state and external font delivery remain unverified. An initial
+fixture setup cleanup error and blocked-font noise were corrected in the owned
+harness before final pass; only its exact disposable state/profile paths were
+removed. No private data, live provider, application or service was exercised.
+
+**Delivery/rollback:** root isolated this program's 33-path delta against the
+pre-implementation baseline. Only the program's ledger entries were inserted
+over existing Git history; earlier unpublished ingestion changes stay local.
+That exact source publication candidate passed 252 backend tests, typecheck,
+build (2.18s), and the same 27 browser cases; its source/index sanitize review
+passed. A build working-directory issue and missing candidate dist binding were
+corrected in the QA setup without product edits. The fixture listener stopped,
+and no owned browser roots remained. Revert only this program's delta.
+Evidence is retained under the workspace's `enhancement-20260905/wewards-final`
+and `wewards-publication-candidate/qa` output folders. Runtime activation remains
+separate from the standing personal-autopush source checkpoint.
+
+## 2026-09-05 - W1 household move and spend-feasibility checkpoint
+
+**Status:** source/test GREEN after Astra review; W2 and final rendered project
+proof are in progress. Publication and deployed runtime remain separate.
+
+**Changed:** shared the existing strategic comparator, added encrypted optional
+per-person monthly organic capacity with finite/nonnegative and clear-to-unknown
+semantics, and joined the first household move to hypothetical spend, reporting,
+5/24 and referral inputs. Dated WAIT uses an explicit time boundary; unresolved
+WAIT withholds unsupported successors. One shared UI component names the
+applicant and shows the conditional primary/successor prerequisites.
+
+**Self-review fixes:** replaced duplicated ordering, repaired lost hypothetical
+offer fields, aligned total commitments with the full offer-window budget,
+preserved wait timing, and removed unconditional APPLY NOW presentation for
+conditional moves. No private planning state is persisted by projection.
+
+**Evidence:** 8 focused, 46 affected and 244 full backend tests passed (full
+3.574s); Python compile, frontend typecheck/build and whitespace checks passed.
+All inputs were fictional and temporary state was identity-verified; no live
+database, provider, service or browser was exercised. W1 UI runtime proof is
+retained for the combined W1/W2 gate. Revert only W1-owned changes while
+preserving preexisting ingestion work and the standing publication policy.
+
 ## 2026-07-16 - wewards.dwagon.app URL live (doc sync)
 
 **Status:** verified live; docs-only ledger sync (no code/config change here).

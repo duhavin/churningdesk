@@ -54,6 +54,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "referral_bonus_override": "INTEGER",
         "referral_bonus_cash": "FLOAT",
         "current_offer_override": "INTEGER",
+        "offer_expiration": "VARCHAR(120)",
         "targeted_peak_offer_points": "INTEGER",
         "targeted_peak_offer_cash": "FLOAT",
         "targeted_peak_offer_source": "TEXT",
@@ -100,6 +101,9 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     },
     "benefit_usage": {
         "suppressed": "BOOLEAN",
+    },
+    "user_profile": {
+        "organic_monthly_capacity": "FLOAT",
     },
 }
 

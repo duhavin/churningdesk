@@ -56,6 +56,7 @@ export function MobileProfile({
   const [balanceModalOpen, setBalanceModalOpen] = useState(false);
   const [draftCurrency, setDraftCurrency] = useState("");
   const [draftBalance, setDraftBalance] = useState("");
+  const [organicCapacity, setOrganicCapacity] = useState("");
 
   const load = () => {
     setLoading(true);
@@ -65,6 +66,7 @@ export function MobileProfile({
         setCards(held);
         setCatalog(cat);
         setReferences(refs);
+        setOrganicCapacity(p.organic_monthly_capacity == null ? "" : String(p.organic_monthly_capacity));
       })
       .catch((e) => flash("error", e.message))
       .finally(() => setLoading(false));
@@ -107,6 +109,22 @@ export function MobileProfile({
       setProfile(updated);
       setBalanceModalOpen(false);
       flash("info", "Point balance saved.");
+    } catch (e: any) {
+      flash("error", e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveOrganicCapacity = async () => {
+    setSaving(true);
+    try {
+      const updated = await api.upsertProfile(user, {
+        organic_monthly_capacity: organicCapacity.trim() === "" ? null : Number(organicCapacity),
+      });
+      setProfile(updated);
+      setOrganicCapacity(updated.organic_monthly_capacity == null ? "" : String(updated.organic_monthly_capacity));
+      flash("info", "Monthly spend capacity saved.");
     } catch (e: any) {
       flash("error", e.message);
     } finally {
@@ -237,6 +255,29 @@ export function MobileProfile({
           </div>
         )}
       </section>
+
+      <Card className="space-y-2">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-100">Monthly spend capacity</h2>
+          <p className="mt-1 text-xs text-slate-500">Your allocation before active minimum-spend commitments. Leave blank when unknown.</p>
+        </div>
+        <div className="flex gap-2">
+          <input
+            className="input min-w-0 flex-1"
+            type="number"
+            min="0"
+            step="1"
+            inputMode="decimal"
+            placeholder="Unknown"
+            value={organicCapacity}
+            onChange={(e) => setOrganicCapacity(e.target.value)}
+            aria-label="Organic monthly spend capacity"
+          />
+          <button className="btn-primary h-10 shrink-0 px-3" onClick={saveOrganicCapacity} disabled={saving}>
+            {saving ? "..." : "Save"}
+          </button>
+        </div>
+      </Card>
 
       <Card className="space-y-3">
         <div className="flex items-center justify-between">

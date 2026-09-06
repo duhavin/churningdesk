@@ -11,6 +11,8 @@ import {
   Spinner,
   StatusBadge,
   cardName,
+  decisionCondition,
+  decisionDisplayStatus,
   fmtMoney,
   fmtNum,
 } from "../components/ui";
@@ -250,7 +252,7 @@ function shortDate(value: string | null | undefined) {
 function pipelineLabel(items: any[]) {
   return items
     .slice(0, 3)
-    .map((item) => `${item.user} ${item.status}${item.referral_from ? ` via ${item.referral_from}` : ""}`)
+    .map((item) => `${item.user} ${decisionDisplayStatus(item)}${item.referral_from ? ` via ${item.referral_from}` : ""}`)
     .join(" | ");
 }
 
@@ -551,7 +553,7 @@ export function CardPlan({ user, bump, flash }: { user: string; bump: number; fl
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <StatusBadge status={r.status} />
+                    <StatusBadge status={decisionDisplayStatus(r)} />
                     {r.is_exceptional && <RareBadge />}
                   </div>
                 </div>
@@ -762,13 +764,14 @@ function ExpandedDetails({
       <DetailSection title="Decision Context">
         <div className="space-y-2 text-xs text-slate-300">
           <div className="flex items-center gap-2">
-            <StatusBadge status={card.status} />
+            <StatusBadge status={decisionDisplayStatus(card)} />
             {card.is_exceptional && <RareBadge />}
           </div>
           <div>
             <span className="text-slate-500">Eligibility:</span>{" "}
             <EligibilityText card={card} />
           </div>
+          {decisionCondition(card) && <div className="text-amber-200">{decisionCondition(card)}</div>}
           {card.eligibility.reasons.length > 0 && (
             <ul className="list-disc space-y-1 pl-4 text-slate-400">
               {card.eligibility.reasons.map((reason) => (

@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from backend import config, models
 from backend.db import Base
 from backend.logic import eligibility, household
+from backend.tests.offer_fixtures import add_current_offer_evidence
 
 
 class HouseholdOrderingTests(unittest.TestCase):
@@ -55,6 +56,8 @@ class HouseholdOrderingTests(unittest.TestCase):
             ]
         )
         db.commit()
+        add_current_offer_evidence(db, [chase, amex])
+        db.commit()
 
         result = household.build_household(db)
         moves = result["moves"]
@@ -100,6 +103,8 @@ class HouseholdOrderingTests(unittest.TestCase):
                 models.Valuation(currency="Capital One Miles", cpp_scraped=1.0),
             ]
         )
+        db.commit()
+        add_current_offer_evidence(db, [venture, venture_x])
         db.commit()
         db.refresh(venture_x)
         db.add(
@@ -169,6 +174,8 @@ class HouseholdOrderingTests(unittest.TestCase):
             ]
         )
         db.commit()
+        add_current_offer_evidence(db, [venture_x])
+        db.commit()
         db.refresh(venture_x)
         db.add(
             models.HeldCard(
@@ -217,6 +224,8 @@ class HouseholdOrderingTests(unittest.TestCase):
                 models.Valuation(currency="Chase Ultimate Rewards", cpp_scraped=1.0),
             ]
         )
+        db.commit()
+        add_current_offer_evidence(db, [ink_preferred])
         db.commit()
         db.add(
             models.HeldCard(
@@ -279,6 +288,8 @@ class HouseholdOrderingTests(unittest.TestCase):
                 models.Valuation(currency="Amex Membership Rewards", cpp_scraped=1.0),
             ]
         )
+        db.commit()
+        add_current_offer_evidence(db, [business_gold])
         db.commit()
         db.add(
             models.HeldCard(
@@ -345,6 +356,8 @@ class HouseholdOrderingTests(unittest.TestCase):
             ]
         )
         db.commit()
+        add_current_offer_evidence(db, [venture, rival])
+        db.commit()
         db.add(
             models.HeldCard(
                 user="User A",
@@ -409,6 +422,8 @@ class HouseholdOrderingTests(unittest.TestCase):
                 models.Valuation(currency="Amex Membership Rewards", cpp_scraped=1.0),
             ]
         )
+        db.commit()
+        add_current_offer_evidence(db, [venture, gold])
         db.commit()
         db.add_all(
             [
@@ -497,6 +512,9 @@ class HouseholdOrderingTests(unittest.TestCase):
         db = self._session()
         db.add_all(self._band_status_products())
         db.commit()
+        products = db.query(models.CardProduct).all()
+        add_current_offer_evidence(db, products)
+        db.commit()
 
         plan = household.build_household(db)
         a_moves = [m for m in plan["moves"] if m["user"] == "User A"]
@@ -516,6 +534,9 @@ class HouseholdOrderingTests(unittest.TestCase):
     def test_move_ordering_value_decides_over_524(self):
         db = self._session()
         db.add_all(self._band_status_products())
+        db.commit()
+        products = db.query(models.CardProduct).all()
+        add_current_offer_evidence(db, products)
         db.commit()
         for user in ("User A", "User B"):
             for i in range(5):
@@ -558,6 +579,8 @@ class HouseholdOrderingTests(unittest.TestCase):
         )
         db.add_all([citi, models.Valuation(currency="Citi ThankYou Points", cpp_scraped=1.0)])
         db.commit()
+        add_current_offer_evidence(db, [citi])
+        db.commit()
         for user in ("User A", "User B"):
             for i in range(2):
                 db.add(
@@ -595,6 +618,8 @@ class HouseholdOrderingTests(unittest.TestCase):
             last_verified=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
         )
         db.add_all([citi, models.Valuation(currency="Citi ThankYou Points", cpp_scraped=1.0)])
+        db.commit()
+        add_current_offer_evidence(db, [citi])
         db.commit()
         for user in ("User A", "User B"):
             db.add(

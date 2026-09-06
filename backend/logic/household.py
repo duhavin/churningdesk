@@ -58,15 +58,6 @@ def _is_chase(issuer: str | None) -> bool:
     return "chase" in (issuer or "").lower()
 
 
-def _is_ink_business(row: dict) -> bool:
-    """Chase Ink business card check, mirroring pipeline.sort_key's is_ink term."""
-    return (
-        _is_chase(row.get("issuer"))
-        and (row.get("ownership") or "") == "Business"
-        and "ink" in (row.get("product_name") or "").lower()
-    )
-
-
 def _held_referral_keys(
     held: models.HeldCard, products: dict[int, models.CardProduct]
 ) -> set[tuple[str, int | tuple[str, str]]]:
@@ -168,9 +159,129 @@ def _referral_reason(
     return base + ". Set this card's referral bonus in Card Plan to quantify the gain."
 
 
-def build_household(db: Session) -> dict:
+def _next_move_projection(
+    db: Session,
+    context: DecisionContext,
+    ordered: list[dict],
+    as_of: dt.date,
+) -> dict:
+    """Project one canonical move and two honest successors from a snapshot."""
+
+    def conditional_successors(rows: list[dict], boundary: str) -> list[dict]:
+        """Label every successor with the hypothetical boundary it depends on."""
+        marked: list[dict] = []
+        for row in rows[:2]:
+            successor = dict(row)
+            own_condition = successor.get("condition_reason")
+            successor["conditional"] = True
+            successor["condition_kind"] = successor.get("condition_kind") or "hypothetical_successor"
+            successor["condition_reason"] = (
+                f"{boundary} {own_condition}" if own_condition else boundary
+            )
+            marked.append(successor)
+        return marked
+
+    primary = ordered[0] if ordered else None
+    if primary is None:
+        return {"primary": None, "successors": []}
+
+    if primary.get("status") == "WAIT":
+        wait_until_raw = primary.get("earliest_eligible_date")
+        if not wait_until_raw:
+            return {
+                "primary": primary,
+                "successors": [],
+                "successor_reason": (
+                    "This WAIT has no recorded eligibility date; successors are withheld "
+                    "until its timing condition is resolved."
+                ),
+            }
+        try:
+            wait_until = dt.date.fromisoformat(str(wait_until_raw))
+        except ValueError:
+            return {
+                "primary": primary,
+                "successors": [],
+                "successor_reason": "The recorded WAIT date is invalid; successors are withheld.",
+            }
+        if wait_until <= as_of:
+            return {
+                "primary": primary,
+                "successors": [],
+                "successor_reason": (
+                    "The WAIT date is no longer a future planning boundary; refresh eligibility "
+                    "before projecting successors."
+                ),
+            }
+        projected = build_household(
+            db,
+            context=context,
+            include_next_move=False,
+            as_of=wait_until,
+            include_timing_waits=True,
+        )
+        return {
+            "primary": primary,
+            "successors": conditional_successors(
+                projected["moves"],
+                f"Conditional on waiting until {wait_until.isoformat()}.",
+            ),
+            "wait_until": wait_until.isoformat(),
+        }
+
+    product = context.products_by_id.get(primary.get("id"))
+    candidate = dict(primary)
+    if product is not None:
+        candidate.update(
+            {
+                "ownership": product.ownership,
+                "account_type": product.account_type,
+                "reports_to_personal_credit": product.reports_to_personal_credit,
+                "current_offer_min_spend": product.current_offer_min_spend,
+                "current_offer_window_months": product.current_offer_window_months,
+            }
+        )
+    # A clean or conditional application is still a declared hypothetical.  A
+    # conditional primary carries its prerequisite while successors recompute
+    # against the same synthetic commitment/5-24/reporting facts.
+    projected_context = context.clone_for_hypothetical_application(
+        primary["user"], candidate, as_of=as_of
+    )
+
+    projected = build_household(
+        db,
+        context=projected_context,
+        include_next_move=False,
+        as_of=as_of,
+        include_timing_waits=True,
+    )
+    return {
+        "primary": primary,
+        "successors": conditional_successors(
+            projected["moves"],
+            f"Conditional on the hypothetical application of {primary.get('display_name') or primary.get('product_name')}."
+            + (f" First: {primary['condition_reason']}" if primary.get("condition_reason") else ""),
+        ),
+        "successor_reason": (
+            "No eligible successor was found after the hypothetical application."
+            if not projected["moves"]
+            else None
+        ),
+    }
+
+
+def build_household(
+    db: Session,
+    context: DecisionContext | None = None,
+    *,
+    include_next_move: bool = True,
+    excluded_move: tuple[str | None, int | None] | None = None,
+    as_of: dt.date | None = None,
+    include_timing_waits: bool = False,
+) -> dict:
     users = config.USERS
-    context = DecisionContext.load(db)
+    context = context or DecisionContext.load(db)
+    as_of = as_of or dt.date.today()
     vmap = context.valuations
     products = context.products_by_id
 
@@ -186,7 +297,16 @@ def build_household(db: Session) -> dict:
         for u in users
     }
     balances_by_user = {u: dict(context.point_balances_by_user.get(u, {})) for u in users}
-    pipelines = {u: pipeline_logic.build_pipeline(db, u, context=context) for u in users}
+    pipelines = {
+        u: pipeline_logic.build_pipeline(
+            db,
+            u,
+            context=context,
+            as_of=as_of,
+            include_timing_waits=include_timing_waits,
+        )
+        for u in users
+    }
 
     # --- Per-user summary ---------------------------------------------------
     user_summaries: list[dict] = []
@@ -315,6 +435,14 @@ def build_household(db: Session) -> dict:
                         "is_exceptional": nc.get("is_exceptional", False),
                         "decision_ready": nc.get("decision_ready", True),
                         "data_quality_issues": nc.get("data_quality_issues", []),
+                        "offer_expiration": nc.get("offer_expiration"),
+                        "current_offer_status": nc.get("current_offer_status"),
+                        "current_offer_reason": nc.get("current_offer_reason"),
+                        "current_offer_quality": nc.get("current_offer_quality"),
+                        "conditional": nc.get("conditional", False),
+                        "condition_kind": nc.get("condition_kind"),
+                        "condition_reason": nc.get("condition_reason"),
+                        "spend_capacity": nc.get("spend_capacity"),
                         "route": route,
                         "referral_match": "family" if family_route else "exact",
                         "referral_family_key": referral_family_key,
@@ -352,7 +480,7 @@ def build_household(db: Session) -> dict:
     referrals = sorted(collapsed_referrals.values(), key=referral_sort_key, reverse=True)
 
     # --- Quarterly application pace ------------------------------------------
-    today = dt.date.today()
+    today = as_of
     quarter_month = ((today.month - 1) // 3) * 3 + 1
     quarter_start = dt.date(today.year, quarter_month, 1)
     total_quarter_apps = sum(
@@ -376,6 +504,8 @@ def build_household(db: Session) -> dict:
         for nc in pipelines[u]["next_cards"]:
             if nc["status"] not in actionable_statuses:
                 continue
+            if excluded_move and (u, nc["id"]) == excluded_move:
+                continue
             ref = referral_index.get((u, nc["id"]))
             ref_val = ref["referral_value"] if ref and ref["referral_value"] else 0
             welcome_points = nc.get("effective_points") or 0
@@ -391,6 +521,11 @@ def build_household(db: Session) -> dict:
                     "product_name": nc["product_name"],
                     "display_name": nc.get("display_name") or product_display_name(nc["issuer"], nc["product_name"]),
                     "ownership": nc["ownership"],
+                    "account_type": nc.get("account_type") or getattr(product, "account_type", "Credit Card"),
+                    "reports_to_personal_credit": nc.get(
+                        "reports_to_personal_credit",
+                        getattr(product, "reports_to_personal_credit", True),
+                    ),
                     "currency": nc.get("currency"),
                     "status": nc["status"],
                     "peak_score": nc["peak_score"],
@@ -401,13 +536,22 @@ def build_household(db: Session) -> dict:
                     "referral_bonus_cash": referral_cash,
                     "household_points": welcome_points + referral_points,
                     "current_offer_points": welcome_points or (getattr(product, "current_offer_effective", None) if product else None),
-                    "current_offer_min_spend": getattr(product, "current_offer_min_spend", None) if product else None,
-                    "current_offer_window_months": getattr(product, "current_offer_window_months", None) if product else None,
+                     "current_offer_min_spend": getattr(product, "current_offer_min_spend", None) if product else None,
+                     "current_offer_window_months": getattr(product, "current_offer_window_months", None) if product else None,
+                     "offer_expiration": nc.get("offer_expiration"),
+                     "current_offer_status": nc.get("current_offer_status"),
+                     "current_offer_reason": nc.get("current_offer_reason"),
+                     "current_offer_quality": nc.get("current_offer_quality"),
+                    "earliest_eligible_date": nc.get("earliest_eligible_date"),
                     "is_exceptional": nc.get("is_exceptional", False),
                     "household_value": round((nc["offer_value"] or 0) + ref_val, 2),
                     "pipeline_rank": nc.get("rank"),
                     "decision_ready": nc.get("decision_ready", True),
                     "data_quality_issues": nc.get("data_quality_issues", []),
+                    "conditional": nc.get("conditional", False),
+                    "condition_kind": nc.get("condition_kind"),
+                    "condition_reason": nc.get("condition_reason"),
+                    "spend_capacity": nc.get("spend_capacity"),
                     "route": ref["route"] if ref else "Direct application",
                     "referral_from": ref["from_user"] if ref else None,
                     "referral_match": ref.get("referral_match") if ref else None,
@@ -420,6 +564,10 @@ def build_household(db: Session) -> dict:
                             else f" Route via {ref['from_user']}'s referral link for bonus on top of welcome offer."
                         )
                         if ref else nc["reason"]
+                    ) + (
+                        f" Conditional: {nc['condition_reason']}"
+                        if nc.get("condition_reason")
+                        else ""
                     ),
                     "pace_warning": (
                         f"Household is at {total_quarter_apps}/{config.MAX_APPS_PER_QUARTER} "
@@ -428,30 +576,25 @@ def build_household(db: Session) -> dict:
                 }
             )
 
-    # Mirror the per-user pipeline precedence (DECISION_RULES "Ranking of the
-    # actionable queue"): strategic bands first — Chase while under 5/24, then
-    # Ink — then exceptional offers, then household value (welcome + referral
-    # bonus) as the primary value signal with pipeline rank as tiebreaker, and
-    # status/peak as trailing timing signals. This keeps Household "best
-    # applications" in agreement with the Pipeline page: a Chase WAIT card can
-    # legitimately top the list while a user is under 5/24, and referral value
-    # can lift a card over its raw pipeline position.
-    def move_sort_key(row: dict) -> tuple:
-        return (
-            1 if row.get("chase_urgent") else 0,
-            1 if _is_ink_business(row) else 0,
-            1 if row.get("is_exceptional") else 0,
-            row.get("household_value") or 0,
-            row.get("household_points") or 0,
-            _pipeline_rank_score(row.get("pipeline_rank")),
-            STATUS_PRIORITY.get(row.get("status"), 0),
-            row.get("peak_score") or 0,
-            -users.index(row["user"]) if row.get("user") in users else -999,
-        )
+    # Household uses the same strategic precedence as Pipeline.  Referral
+    # capture is an explicit addition to the value term, so it can lift a move
+    # without introducing a second strategic comparator.
+    ordered = sorted(
+        moves,
+        key=lambda row: pipeline_logic.strategy_sort_key(
+            row,
+            under_524=bool(row.get("chase_urgent")),
+            value=row.get("offer_value"),
+            referral_value=row.get("referral_value") or 0,
+            tie_points=row.get("household_points") or 0,
+            status=row.get("status"),
+            pipeline_rank=row.get("pipeline_rank"),
+            user_position=users.index(row["user"]) if row.get("user") in users else 999,
+        ),
+        reverse=True,
+    )
 
-    ordered = sorted(moves, key=move_sort_key, reverse=True)
-
-    return {
+    result = {
         "users": user_summaries,
         "combined_est_value": round(combined_value, 2),
         "balance_rows": balance_rows,
@@ -463,6 +606,9 @@ def build_household(db: Session) -> dict:
         "at_pace_cap": at_pace_cap,
         "max_apps_per_quarter": config.MAX_APPS_PER_QUARTER,
     }
+    if include_next_move:
+        result["next_move"] = _next_move_projection(db, context, ordered, as_of)
+    return result
 
 
 def _wallet_efficiency(context: DecisionContext, pipelines: dict) -> dict:

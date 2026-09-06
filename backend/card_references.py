@@ -587,6 +587,7 @@ def seed_card_references(db: Session, *, seed_products: bool = True) -> dict:
                         "current_offer_cash",
                         "current_offer_min_spend",
                         "current_offer_window_months",
+                        "offer_expiration",
                         "current_offer_override",
                     ):
                         if getattr(product, field, None) is not None:

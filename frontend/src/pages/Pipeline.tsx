@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, type ApiPayload, type CardReference, type CatalogEntry, type HeldAction, type LadderAlternative, type PipelineCard, type PipelineResponse } from "../lib/api";
 import type { Flash } from "../App";
-import { Banner, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtMoney } from "../components/ui";
+import { Banner, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, decisionCondition, decisionDisplayStatus, fmtMoney } from "../components/ui";
+import { NextMove } from "../components/NextMove";
 import { CardForm } from "../components/CardForm";
 
 const ACTION_STYLE: Record<string, string> = {
@@ -76,6 +77,7 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
   const needsData = data?.needs_data ?? [];
   const alternates = data?.alternate_strategies ?? [];
   const actions = data?.held_actions ?? [];
+  const canonical = data?.household_next_move;
   const referenceByKey = new Map(references.map((row) => [row.canonical_key, row]));
   const applyUrlFor = (id: number) => {
     const catalogRow = catalog.find((row) => row.id === id);
@@ -99,6 +101,8 @@ export function Pipeline({ user, bump, flash }: { user: string; bump: number; fl
           </>
         )}
       </Banner>
+
+      <NextMove projection={canonical} />
 
       <div className="grid grid-cols-2 gap-1 rounded-lg border border-ink-400/60 bg-ink-800 p-1 lg:hidden">
         <button
@@ -259,6 +263,8 @@ function actionLabel(action: string) {
 
 function NextRow({ card, applyUrl, onRecord }: { card: PipelineCard; applyUrl?: string | null; onRecord: () => void }) {
   const [open, setOpen] = useState(false);
+  const displayStatus = decisionDisplayStatus(card);
+  const actionableUrl = displayStatus === "APPLY NOW" ? applyUrl : null;
   return (
     <div className="rounded-lg border border-ink-400/60 bg-ink-700/60 px-3 py-2">
       <button className="flex w-full items-start gap-2 text-left" onClick={() => setOpen((value) => !value)}>
@@ -272,18 +278,19 @@ function NextRow({ card, applyUrl, onRecord }: { card: PipelineCard; applyUrl?: 
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              {applyUrl ? (
-                <a href={applyUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
-                  <StatusBadge status={card.status} />
+              {actionableUrl ? (
+                <a href={actionableUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                  <StatusBadge status={displayStatus} />
                 </a>
               ) : (
-                <StatusBadge status={card.status} />
+                <StatusBadge status={displayStatus} />
               )}
               {card.is_exceptional && <RareBadge />}
               <span className={`text-lg text-slate-500 transition-transform ${open ? "rotate-90" : ""}`}>&rsaquo;</span>
             </div>
           </div>
           {card.reason && <div className="line-clamp-1 mt-1 text-[11px] leading-tight text-slate-500">{shortText(card.reason, 72)}</div>}
+          {decisionCondition(card) && <div className="line-clamp-2 mt-1 text-[11px] leading-tight text-amber-200">{shortText(decisionCondition(card), 120)}</div>}
           <div className="mt-1.5 flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-baseline gap-2">
               <div className="text-sm font-semibold text-slate-200">{fmtMoney(card.offer_value)}</div>
@@ -300,7 +307,7 @@ function NextRow({ card, applyUrl, onRecord }: { card: PipelineCard; applyUrl?: 
             <span>Peak score {card.peak_score}</span>
             {card.current_offer_min_spend ? <span>Spend {fmtMoney(card.current_offer_min_spend)} / {card.current_offer_window_months ?? "?"} mo</span> : null}
           </div>
-          <button className="btn-success h-8 px-3 text-xs" onClick={onRecord}>Record application</button>
+          {displayStatus === "APPLY NOW" && <button className="btn-success h-8 px-3 text-xs" onClick={onRecord}>Record application</button>}
         </div>
       )}
     </div>
@@ -365,13 +372,14 @@ function NeedsDataRow({ card, variant = "needs_data" }: { card: PipelineCard; va
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <StatusBadge status={card.status} />
+          <StatusBadge status={decisionDisplayStatus(card)} />
           {card.is_exceptional && <RareBadge />}
         </div>
       </div>
       <div className={`line-clamp-2 mt-1 text-[11px] leading-tight ${isLadder ? "pipeline-ladder-reason text-slate-400" : "text-slate-400"}`}>
         {shortText(card.reason)}
       </div>
+      {decisionCondition(card) && <div className="line-clamp-2 mt-1 text-[11px] leading-tight text-amber-200">{shortText(decisionCondition(card), 120)}</div>}
     </div>
   );
 }

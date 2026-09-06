@@ -28,6 +28,7 @@ FIELD_LABELS = {
     "current_offer_min_spend": "Minimum spend",
     "current_offer_points": "Welcome bonus",
     "current_offer_window_months": "Spend window",
+    "offer_expiration": "Offer expiration",
     "earn_multipliers": "Earn rates",
     "eligibility_tags": "Eligibility rules",
     "peak_offer_points": "Public peak",

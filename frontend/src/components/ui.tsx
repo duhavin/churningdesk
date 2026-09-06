@@ -6,6 +6,7 @@ const STATUS_STYLES: Record<string, string> = {
   WATCH: "bg-amber-500/15 text-amber-300 border-amber-500/40",
   WAIT: "bg-slate-500/15 text-slate-300 border-slate-500/40",
   "NEEDS DATA": "bg-amber-500/10 text-amber-200 border-amber-500/50 border-dashed",
+  CONDITIONAL: "bg-amber-500/10 text-amber-200 border-amber-500/50 border-dashed",
   "LOW PRIORITY": "bg-slate-700/40 text-slate-400 border-slate-600/40",
   SKIP: "bg-rose-600/15 text-rose-300 border-rose-600/40",
   FUTURE: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/40",
@@ -20,6 +21,32 @@ export function StatusBadge({ status }: { status: string }) {
       {status}
     </span>
   );
+}
+
+/** Keep action rows honest when a strategic status is gated by a condition. */
+export function decisionDisplayStatus(item: {
+  status?: string | null;
+  conditional?: boolean;
+  decision_ready?: boolean;
+  current_offer_quality?: { ready?: boolean } | null;
+}) {
+  if (item.conditional || item.decision_ready === false || item.current_offer_quality?.ready === false) {
+    return "CONDITIONAL";
+  }
+  return item.status || "NEEDS DATA";
+}
+
+export function decisionCondition(item: {
+  conditional?: boolean;
+  condition_reason?: string | null;
+  current_offer_quality?: { ready?: boolean; reason?: string | null } | null;
+  current_offer_reason?: string | null;
+}) {
+  if (item.condition_reason) return item.condition_reason;
+  if (item.current_offer_quality?.ready === false) {
+    return item.current_offer_reason || item.current_offer_quality.reason || "Confirm current public offer terms before applying.";
+  }
+  return null;
 }
 
 export function RareBadge() {

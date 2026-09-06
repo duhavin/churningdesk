@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type CardReference, type CatalogEntry, type HeldCard } from "../lib/api";
 import type { Flash } from "../App";
-import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtDate, fmtMoney, fmtNum } from "../components/ui";
+import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, decisionCondition, decisionDisplayStatus, fmtDate, fmtMoney, fmtNum } from "../components/ui";
+import { NextMove } from "../components/NextMove";
 
 const SEV: Record<string, string> = {
   high: "border-rose-500/40 bg-rose-500/10 text-rose-200",
@@ -95,7 +96,7 @@ export function Dashboard({
       .filter((a: any) => !["pending_changes", "unreviewed_discovered"].includes(String(a.type ?? "")) || d.user === adminUser)
       .map((a: any) => ({ ...a, user: d.user })),
   );
-  const immediateStatuses = new Set(["APPLY NOW", "WATCH"]);
+  const immediateStatuses = new Set(["APPLY NOW", "WATCH", "WAIT"]);
   const moves = (household?.moves ?? [])
     .filter((m: any) => m.decision_ready !== false && immediateStatuses.has(String(m.status)))
     .slice(0, 6);
@@ -215,6 +216,8 @@ export function Dashboard({
         <Stat label="Needs attention" value={String(attention.length)} accent={attention.length ? "warn" : "good"} />
         <Stat label="Household points value" value={fmtMoney(household?.combined_est_value)} />
       </div>
+
+      <NextMove projection={household?.next_move} />
 
       <div className="grid gap-6 xl:grid-cols-3">
         <div className="hidden md:block xl:col-span-2">
@@ -346,7 +349,7 @@ export function Dashboard({
                 <div className="space-y-1 px-2.5 py-2">
                   {moves.map((m: any) => {
                     const key = `move-${m.user}-${m.id}`;
-                    const url = applyUrl(m.id);
+                    const url = decisionDisplayStatus(m) === "APPLY NOW" ? applyUrl(m.id) : null;
                     const isOpen = Boolean(expandedAction[key]);
                     return (
                     <div key={key} className="rounded-lg border border-ink-400/50 bg-ink-800/40 px-2.5 py-1.5">
@@ -361,12 +364,13 @@ export function Dashboard({
                             <div className="text-[11px] text-slate-500">{m.issuer} | peak {m.peak_score}</div>
                           </div>
                           <div className="flex shrink-0 items-center gap-1">
-                            <StatusBadge status={m.status} />
+                            <StatusBadge status={decisionDisplayStatus(m)} />
                             {m.is_exceptional && <RareBadge />}
                             <span className={`text-lg text-slate-500 transition-transform ${isOpen ? "rotate-90" : ""}`}>&rsaquo;</span>
                           </div>
                         </div>
                         <div className="mt-1 text-xs font-semibold text-emerald-300">{pointsForMove(m)}</div>
+                        {decisionCondition(m) && <div className="mt-1 line-clamp-2 text-[11px] text-amber-200">{decisionCondition(m)}</div>}
                       </button>
                       {isOpen && (
                         <div
@@ -408,7 +412,7 @@ export function Dashboard({
                 <div className="space-y-2 px-2.5 py-2">
                   {referrals.map((r: any, i: number) => {
                     const key = `referral-${i}-${r.id}`;
-                    const url = applyUrl(r.id);
+                    const url = decisionDisplayStatus({ ...r, status: r.recipient_status }) === "CONDITIONAL" ? null : applyUrl(r.id);
                     const isOpen = Boolean(expandedAction[key]);
                     return (
                     <div key={key} className="rounded-lg border border-ink-400/50 bg-ink-800/40 px-3 py-2">
@@ -421,6 +425,7 @@ export function Dashboard({
                             </div>
                             <div className="truncate text-sm font-medium text-slate-100">{cardName(r)}</div>
                             <div className="text-xs font-semibold text-emerald-300">{pointsForReferral(r)}</div>
+                            {r.conditional && <StatusBadge status="CONDITIONAL" />}
                           </div>
                           <span className={`shrink-0 text-lg text-slate-500 transition-transform ${isOpen ? "rotate-90" : ""}`}>&rsaquo;</span>
                         </div>
@@ -431,6 +436,7 @@ export function Dashboard({
                           onClick={() => toggleExpanded(key)}
                         >
                           <div className="line-clamp-4">{r.reason}</div>
+                          {decisionCondition(r) && <div className="text-amber-200">{decisionCondition(r)}</div>}
                           <div>Estimated value {fmtMoney(r.household_gain)}</div>
                           {url && (
                             <a
@@ -464,7 +470,7 @@ export function Dashboard({
               {moves.map((m: any) => {
                 const key = `desktop-move-${m.user}-${m.id}`;
                 const isOpen = Boolean(expandedAction[key]);
-                const url = applyUrl(m.id);
+                const url = decisionDisplayStatus(m) === "APPLY NOW" ? applyUrl(m.id) : null;
                 return (
                   <div
                     key={key}
@@ -481,7 +487,7 @@ export function Dashboard({
                         <div className="text-[11px] text-slate-500">{m.issuer} | peak {m.peak_score}</div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
-                        <StatusBadge status={m.status} />
+                        <StatusBadge status={decisionDisplayStatus(m)} />
                         {m.is_exceptional && <RareBadge />}
                         <span className={`text-lg text-slate-500 transition-transform ${isOpen ? "rotate-90" : ""}`}>&rsaquo;</span>
                       </div>
@@ -490,6 +496,7 @@ export function Dashboard({
                     {isOpen && (
                       <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
                         <div>{m.reason}</div>
+                        {decisionCondition(m) && <div className="text-amber-200">{decisionCondition(m)}</div>}
                         <div className="flex flex-wrap gap-x-3 gap-y-1">
                           <span>{pointsBreakdownForMove(m)}</span>
                           <span>Est. {fmtMoney(m.household_value)}</span>
@@ -524,7 +531,7 @@ export function Dashboard({
               {referrals.map((r: any, i: number) => {
                 const key = `desktop-referral-${i}-${r.id}`;
                 const isOpen = Boolean(expandedAction[key]);
-                const url = applyUrl(r.id);
+                const url = decisionDisplayStatus({ ...r, status: r.recipient_status }) === "CONDITIONAL" ? null : applyUrl(r.id);
                 return (
                   <div
                     key={key}
@@ -539,12 +546,14 @@ export function Dashboard({
                         </div>
                         <div className="truncate text-sm font-medium text-slate-100">{cardName(r)}</div>
                         <div className="mt-1 text-xs font-semibold text-emerald-300">{pointsForReferral(r)}</div>
+                        {r.conditional && <StatusBadge status="CONDITIONAL" />}
                       </div>
                       <span className={`shrink-0 text-lg text-slate-500 transition-transform ${isOpen ? "rotate-90" : ""}`}>&rsaquo;</span>
                     </div>
                     {isOpen && (
                       <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
                         <div>{r.reason}</div>
+                        {decisionCondition(r) && <div className="text-amber-200">{decisionCondition(r)}</div>}
                         <div>Estimated household value {fmtMoney(r.household_gain)}</div>
                         {url && (
                           <a

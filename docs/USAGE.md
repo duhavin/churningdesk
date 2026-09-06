@@ -1,5 +1,22 @@
 # WEwards Usage And Operations
 
+## Household next move
+
+Dashboard, Pipeline and Household show the same first household move and up to
+two conditional successors. A binding WAIT may rank first. In Profiles, enter
+each person's own monthly organic spending allocation before active welcome-bonus
+commitments; do not enter the same household budget for both people. Leave it
+blank to restore unknown capacity. Phone users can edit this under My Cards →
+Profile. Planning checks cumulative obligations at their recorded deadlines and
+keeps insufficient or unknown capacity visible as a condition.
+
+Current public terms require fresh evidence for their amount, spend and window;
+a known expiration also needs evidence and must not have elapsed. An unknown
+published expiration is disclosed. A higher private targeted points offer does
+not inherit confirmation of its spend/window from the public offer. Confirm those
+private terms before applying. Referral cards retain their value and explanation
+but withhold Apply while the recipient's move is conditional.
+
 ## Backend
 
 From `<repo-root>`:

@@ -22,6 +22,7 @@ SCALAR_COPY_FIELDS = (
     "current_offer_cash",
     "current_offer_min_spend",
     "current_offer_window_months",
+    "offer_expiration",
     "peak_offer_min_spend",
     "peak_offer_source",
     "peak_offer_date",

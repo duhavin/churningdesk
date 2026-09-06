@@ -103,6 +103,10 @@ class CardProduct(Base):
     current_offer_cash: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_offer_min_spend: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_offer_window_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Public offer end date as reported by the source.  This remains text
+    # because sources may publish a date, a month, or an explicit unknown.
+    # Decision code parses it conservatively at read time.
+    offer_expiration: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     # Peak / all-time-best offer (the "target/goal")
     peak_offer_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -394,6 +398,9 @@ class UserProfile(Base):
     point_balances: Mapped[dict | None] = mapped_column(
         EncryptedJSON, nullable=True
     )  # 🔒 {currency: balance}
+    organic_monthly_capacity: Mapped[float | None] = mapped_column(
+        EncryptedFloat, nullable=True
+    )  # 🔒 optional spend allocation before active bonus commitments
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { Flash } from "../App";
-import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, fmtDate, fmtMoney, fmtNum } from "../components/ui";
+import { Card, EmptyState, RareBadge, SectionTitle, Spinner, StatusBadge, cardName, decisionCondition, decisionDisplayStatus, fmtDate, fmtMoney, fmtNum } from "../components/ui";
+import { NextMove } from "../components/NextMove";
 
 const BENEFIT_CATEGORIES = [
   { id: "dining", label: "Dining" },
@@ -541,6 +542,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
 
       {overviewTab === "snapshot" && (
       <>
+      <NextMove projection={data?.next_move} />
       {/* Best next applications (both applicants) */}
       <Card className="order-2 hidden p-0 !bg-ink-900/60 md:block">
         <div className="px-4 pt-4 pb-2 font-semibold text-slate-100">Best Household Applications</div>
@@ -558,11 +560,12 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                     <div className="text-[11px] text-slate-500">{m.ownership}{m.currency ? ` - ${m.currency}` : ""}</div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <StatusBadge status={m.status} />
+                    <StatusBadge status={decisionDisplayStatus(m)} />
                     {m.is_exceptional && <RareBadge />}
                   </div>
                 </div>
                 <div className="line-clamp-1 mt-1 text-[11px] leading-tight text-slate-500">{m.reason}</div>
+                {decisionCondition(m) && <div className="line-clamp-2 mt-1 text-[11px] leading-tight text-amber-200">{decisionCondition(m)}</div>}
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-400">
                   <span>{m.route ?? (m.referral_from ? `Refer via ${m.referral_from}` : "Direct application")}</span>
                   <span className="font-semibold text-emerald-300">{householdPointsLabel(m)}</span>
@@ -593,7 +596,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                         </div>
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <span className="truncate text-sm font-medium text-slate-100">{cardName(m)}</span>
-                          <StatusBadge status={m.status} />
+                          <StatusBadge status={decisionDisplayStatus(m)} />
                           {m.is_exceptional && <RareBadge />}
                         </div>
                         <div className="text-[11px] text-slate-500">
@@ -609,6 +612,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                     {open && (
                       <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
                         <div>{m.reason}</div>
+                        {decisionCondition(m) && <div className="text-amber-200">{decisionCondition(m)}</div>}
                         <div className="flex flex-wrap gap-x-3 gap-y-1">
                           <span>{offerText(m)}</span>
                           <span>{householdBreakdown(m)}</span>
@@ -652,6 +656,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                     </div>
                     <div className="truncate text-sm font-medium text-slate-100">{cardName(r)}</div>
                     <div className="mt-1 text-xs font-semibold text-emerald-300">{householdBreakdown(r)}</div>
+                    {r.conditional && <StatusBadge status="CONDITIONAL" />}
                   </div>
                   <div className="shrink-0 text-right">
                     <div className="font-semibold tabular-nums text-emerald-300">{fmtMoney(r.household_gain)}</div>
@@ -662,6 +667,7 @@ export function Household({ bump, flash }: { user: string; bump: number; flash: 
                 {open && (
                   <div className="mt-2 space-y-2 border-t border-ink-400/50 pt-2 text-xs text-slate-400">
                     <div>{r.reason}</div>
+                    {decisionCondition(r) && <div className="text-amber-200">{decisionCondition(r)}</div>}
                     <div className="flex flex-wrap gap-x-3 gap-y-1">
                       <span>Recipient offer {fmtMoney(r.recipient_offer_value)}</span>
                       <span>Referral value {r.referral_value != null ? fmtMoney(r.referral_value) : "needs data"}</span>
